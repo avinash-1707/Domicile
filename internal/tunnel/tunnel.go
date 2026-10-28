@@ -7,12 +7,18 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 )
 
 // ALPN is the TLS application protocol both transports negotiate.
 const ALPN = "domicile/1"
+
+// ErrPeerStoppedReading is returned by Stream.Write when the peer called
+// StopReading, as opposed to aborting the stream or losing the session. Only
+// then may data flowing the other way still be complete.
+var ErrPeerStoppedReading = errors.New("tunnel: peer stopped reading")
 
 // Stream is one proxied connection inside a Session.
 //
@@ -25,6 +31,12 @@ type Stream interface {
 	// CloseWrite tells the peer no more data will be sent. Reads keep working
 	// until the peer closes its side.
 	CloseWrite() error
+
+	// StopReading tells the peer this side will read no more, without
+	// aborting: the peer's writes fail with ErrPeerStoppedReading, and what
+	// this side already sent stays valid. Use it when the data's final
+	// receiver went away after a normal exchange.
+	StopReading()
 
 	// Close aborts the stream in both directions and may be called
 	// concurrently with Read and Write. Pending and later calls fail; a

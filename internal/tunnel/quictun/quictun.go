@@ -139,8 +139,24 @@ type stream struct {
 	closedWrite atomic.Bool
 }
 
-func (s *stream) Read(p []byte) (int, error)  { return s.st.Read(p) }
-func (s *stream) Write(p []byte) (int, error) { return s.st.Write(p) }
+// Stream error codes. They let the peer tell a deliberate stop from an
+// abort: both arrive as STOP_SENDING once this side has sent its FIN.
+const (
+	codeAbort       quic.StreamErrorCode = 1
+	codeStopReading quic.StreamErrorCode = 2
+)
+
+func (s *stream) Read(p []byte) (int, error) { return s.st.Read(p) }
+func (s *stream) Write(p []byte) (int, error) {
+	n, err := s.st.Write(p)
+	// Only the peer's StopReading earns the sentinel; its aborts, connection
+	// errors and local cancels stay as they are.
+	var se *quic.StreamError
+	if errors.As(err, &se) && se.Remote && se.ErrorCode == codeStopReading {
+		err = fmt.Errorf("%w: %w", tunnel.ErrPeerStoppedReading, err)
+	}
+	return n, err
+}
 
 // CloseWrite sends FIN; quic-go's Close only closes the send direction.
 func (s *stream) CloseWrite() error {
@@ -148,15 +164,18 @@ func (s *stream) CloseWrite() error {
 	return s.st.Close()
 }
 
+func (s *stream) StopReading() { s.st.CancelRead(codeStopReading) }
+
 // Close aborts whatever is still open. CancelWrite (not quic-go's Close) is
 // used for the send side because it unblocks a Write stuck on flow control,
 // is safe concurrently with Write, and sends RESET_STREAM so the peer sees an
 // abort instead of a clean end. After a graceful CloseWrite it is skipped, as
 // it would discard data the peer has not acknowledged yet.
 func (s *stream) Close() error {
-	s.st.CancelRead(0)
+	// A no-op if StopReading already ran, so the peer keeps that signal.
+	s.st.CancelRead(codeAbort)
 	if !s.closedWrite.Load() {
-		s.st.CancelWrite(0)
+		s.st.CancelWrite(codeAbort)
 	}
 	return nil
 }
