@@ -6,6 +6,7 @@ package quictun
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"sync/atomic"
@@ -20,13 +21,22 @@ import (
 // under quic-go's 30 s default idle timeout, so idle sessions survive.
 const defaultKeepAlive = 15 * time.Second
 
+// defaultMaxIncomingStreams suits the exit side: a browser page opens tens
+// of connections, so quic-go's default of 100 is too low for several busy
+// agents.
+const defaultMaxIncomingStreams = 1000
+
 // Config tunes the QUIC connection. Zero values use quic-go's defaults,
-// except KeepAlivePeriod, which defaults to defaultKeepAlive.
+// except KeepAlivePeriod (defaultKeepAlive) and MaxIncomingStreams
+// (defaultMaxIncomingStreams).
 type Config struct {
 	MaxStreamReceiveWindow     uint64
 	MaxConnectionReceiveWindow uint64
 	KeepAlivePeriod            time.Duration
 	MaxIdleTimeout             time.Duration
+	// MaxIncomingStreams caps concurrent bidirectional streams the peer may
+	// open. Unidirectional streams are never used and always refused.
+	MaxIncomingStreams int64
 }
 
 func (c Config) quic() *quic.Config {
@@ -34,24 +44,40 @@ func (c Config) quic() *quic.Config {
 	if keepAlive == 0 {
 		keepAlive = defaultKeepAlive
 	}
+	maxStreams := c.MaxIncomingStreams
+	if maxStreams == 0 {
+		maxStreams = defaultMaxIncomingStreams
+	}
 	return &quic.Config{
 		MaxStreamReceiveWindow:     c.MaxStreamReceiveWindow,
 		MaxConnectionReceiveWindow: c.MaxConnectionReceiveWindow,
 		KeepAlivePeriod:            keepAlive,
 		MaxIdleTimeout:             c.MaxIdleTimeout,
-		// A browser page opens tens of connections; the default cap of 100
-		// concurrent streams is too low for several busy agents.
-		MaxIncomingStreams: 1000,
+		MaxIncomingStreams:         maxStreams,
+		MaxIncomingUniStreams:      -1,
 	}
 }
 
 // Listen starts a QUIC listener on addr (UDP). tlsConf must offer tunnel.ALPN.
 func Listen(addr string, tlsConf *tls.Config, cfg Config) (tunnel.Listener, error) {
-	l, err := quic.ListenAddr(addr, tlsConf, cfg.quic())
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("quic listen %s: %w", addr, err)
 	}
-	return &listener{l: l}, nil
+	udp, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		return nil, fmt.Errorf("quic listen %s: %w", addr, err)
+	}
+	// Owning the Transport and socket lets Close release the port at once;
+	// quic.ListenAddr keeps it bound while closed connections drain.
+	tr := &quic.Transport{Conn: udp}
+	l, err := tr.Listen(tlsConf, cfg.quic())
+	if err != nil {
+		tr.Close()
+		udp.Close()
+		return nil, fmt.Errorf("quic listen %s: %w", addr, err)
+	}
+	return &listener{l: l, tr: tr, udp: udp}, nil
 }
 
 // Dial connects to a QUIC tunnel server.
@@ -64,7 +90,9 @@ func Dial(ctx context.Context, addr string, tlsConf *tls.Config, cfg Config) (tu
 }
 
 type listener struct {
-	l *quic.Listener
+	l   *quic.Listener
+	tr  *quic.Transport
+	udp *net.UDPConn
 }
 
 func (l *listener) Accept(ctx context.Context) (tunnel.Session, error) {
@@ -76,7 +104,9 @@ func (l *listener) Accept(ctx context.Context) (tunnel.Session, error) {
 }
 
 func (l *listener) Addr() net.Addr { return l.l.Addr() }
-func (l *listener) Close() error   { return l.l.Close() }
+func (l *listener) Close() error {
+	return errors.Join(l.l.Close(), l.tr.Close(), l.udp.Close())
+}
 
 type session struct {
 	conn *quic.Conn
@@ -99,6 +129,8 @@ func (s *session) AcceptStream(ctx context.Context) (tunnel.Stream, error) {
 }
 
 func (s *session) Done() <-chan struct{} { return s.conn.Context().Done() }
+
+func (s *session) RemoteAddr() net.Addr { return s.conn.RemoteAddr() }
 
 func (s *session) Close() error { return s.conn.CloseWithError(0, "") }
 

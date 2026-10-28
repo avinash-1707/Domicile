@@ -12,9 +12,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/fs"
 	"math/big"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -85,4 +90,85 @@ func PinnedClientConfig(pin Fingerprint, alpn string) *tls.Config {
 			return nil
 		},
 	}
+}
+
+// String returns the fingerprint as lowercase hex, the form users copy into
+// the exit's configuration.
+func (f Fingerprint) String() string { return hex.EncodeToString(f[:]) }
+
+// ParseFingerprint parses the hex form produced by Fingerprint.String.
+func ParseFingerprint(s string) (Fingerprint, error) {
+	var f Fingerprint
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return f, fmt.Errorf("fingerprint is not hex: %w", err)
+	}
+	if len(b) != len(f) {
+		return f, fmt.Errorf("fingerprint is %d bytes, want %d", len(b), len(f))
+	}
+	copy(f[:], b)
+	return f, nil
+}
+
+const (
+	certFile = "server.crt"
+	keyFile  = "server.key"
+)
+
+// LoadOrCreate loads the server certificate from dir, creating dir and a new
+// certificate on first run. The certificate must survive restarts: every
+// exit pins its fingerprint. If only one of the two files exists it returns
+// an error rather than replace the identity exits already trust.
+func LoadOrCreate(dir string) (tls.Certificate, error) {
+	certPath, keyPath := filepath.Join(dir, certFile), filepath.Join(dir, keyFile)
+	_, certErr := os.Stat(certPath)
+	_, keyErr := os.Stat(keyPath)
+	switch {
+	case certErr == nil && keyErr == nil:
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("load server certificate: %w", err)
+		}
+		return cert, nil
+	case !errors.Is(certErr, fs.ErrNotExist) || !errors.Is(keyErr, fs.ErrNotExist):
+		return tls.Certificate{}, fmt.Errorf("server certificate in %s is incomplete or unreadable (cert: %v, key: %v); restore it or remove both files to create a new identity (exits must then be re-paired)", dir, certErr, keyErr)
+	}
+
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return tls.Certificate{}, fmt.Errorf("create state dir: %w", err)
+	}
+	cert, err := SelfSigned("domicile")
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("encode key: %w", err)
+	}
+	// The key is written first so a crash in between leaves no certificate
+	// without its key.
+	if err := writeNew(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})); err != nil {
+		return tls.Certificate{}, err
+	}
+	if err := writeNew(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})); err != nil {
+		return tls.Certificate{}, err
+	}
+	return cert, nil
+}
+
+// writeNew creates path with owner-only permissions and fails if it exists.
+func writeNew(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("sync %s: %w", path, err)
+	}
+	return f.Close()
 }

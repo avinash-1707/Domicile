@@ -39,10 +39,13 @@ const bulkSize = 1 << 62
 // open latency, page-style loads and bulk throughput. Bulk runs last because
 // it leaves a stalled stream behind.
 func run(ctx context.Context, t transport, opts options) (result, error) {
-	server, exit, err := connect(ctx, t)
+	l, server, exit, err := connect(ctx, t)
 	if err != nil {
 		return result{}, err
 	}
+	// Deferred calls run in reverse: sessions close before the listener,
+	// which would otherwise cut them off without notice.
+	defer l.Close()
 	defer server.Close()
 	defer exit.Close()
 	go respond(exit)
@@ -80,21 +83,21 @@ func run(ctx context.Context, t transport, opts options) (result, error) {
 	return res, nil
 }
 
-func connect(ctx context.Context, t transport) (server, exit tunnel.Session, err error) {
+// connect returns the listener too: closing it ends the sessions, so it must
+// stay open until they are done.
+func connect(ctx context.Context, t transport) (l tunnel.Listener, server, exit tunnel.Session, err error) {
 	cert, err := certs.SelfSigned("domicile")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	pin, err := certs.FingerprintOf(cert)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	l, err := t.listen("127.0.0.1:0", certs.ServerConfig(cert, tunnel.ALPN))
+	l, err = t.listen("127.0.0.1:0", certs.ServerConfig(cert, tunnel.ALPN))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	// Sessions outlive the listener once accepted.
-	defer l.Close()
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -111,14 +114,16 @@ func connect(ctx context.Context, t transport) (server, exit tunnel.Session, err
 
 	exit, err = t.dial(ctx, l.Addr().String(), certs.PinnedClientConfig(pin, tunnel.ALPN))
 	if err != nil {
-		return nil, nil, err
+		l.Close()
+		return nil, nil, nil, err
 	}
 	a := <-ch
 	if a.err != nil {
 		exit.Close()
-		return nil, nil, a.err
+		l.Close()
+		return nil, nil, nil, a.err
 	}
-	return a.s, exit, nil
+	return l, a.s, exit, nil
 }
 
 // pageLoad fetches pageStreams objects in parallel and returns the time until

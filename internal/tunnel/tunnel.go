@@ -43,6 +43,9 @@ type Session interface {
 	// Done is closed when the session ends, from either side.
 	Done() <-chan struct{}
 
+	// RemoteAddr is the peer's network address.
+	RemoteAddr() net.Addr
+
 	Close() error
 }
 
@@ -50,5 +53,9 @@ type Session interface {
 type Listener interface {
 	Accept(ctx context.Context) (Session, error)
 	Addr() net.Addr
+
+	// Close stops accepting and releases the address immediately. Sessions
+	// it accepted are terminated without notifying the peer, so close them
+	// first for a clean shutdown.
 	Close() error
 }
