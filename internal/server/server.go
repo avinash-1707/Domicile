@@ -5,8 +5,6 @@ package server
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/avinash-1707/domicile/internal/secret"
 	"github.com/avinash-1707/domicile/internal/tunnel"
 	"github.com/avinash-1707/domicile/internal/wire"
 )
@@ -208,12 +207,7 @@ func reject(st tunnel.Stream, sess tunnel.Session, status wire.HelloStatus) {
 }
 
 func (s *Server) validToken(h wire.Hello) bool {
-	want, ok := s.exits[h.Name]
-	// Hashing gives both sides a fixed length, so the comparison takes the
-	// same time whether the name exists or how long the guess is.
-	got, exp := sha256.Sum256([]byte(h.Token)), sha256.Sum256([]byte(want))
-	match := subtle.ConstantTimeCompare(got[:], exp[:]) == 1
-	return ok && match
+	return secret.Check(s.exits, h.Name, h.Token)
 }
 
 // reservePending takes a global and a per-IP pending slot, or neither.
