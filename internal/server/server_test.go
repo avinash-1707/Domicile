@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -42,6 +43,10 @@ type harness struct {
 
 // The exit "home" is paired with this credential in every harness.
 const homeCredential = "secret-token"
+
+// testDestinations lets the exit reach the loopback test servers, which its
+// deny list would otherwise refuse.
+var testDestinations = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
@@ -136,6 +141,7 @@ func (h *harness) runExit(serverAddr, token string) <-chan error {
 			Name:       "home",
 			Credential: token,
 			Dial:       h.dialer(serverAddr),
+			Allow:      testDestinations,
 			Logger:     quietLogger(),
 		})
 	}()
@@ -176,7 +182,7 @@ func TestJoinThenConnect(t *testing.T) {
 	rctx, stop := context.WithCancel(context.Background())
 	defer func() { stop(); <-done }()
 	go func() {
-		done <- exit.Run(rctx, exit.Config{Name: "office", Credential: cred, Dial: h.dialer(h.addr), Logger: quietLogger()})
+		done <- exit.Run(rctx, exit.Config{Name: "office", Credential: cred, Dial: h.dialer(h.addr), Allow: testDestinations, Logger: quietLogger()})
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for !h.srv.Connected("office") {
@@ -349,12 +355,12 @@ func TestUnsupportedVersionGetsFinalReply(t *testing.T) {
 	if _, err := st.Write([]byte{wire.Version + 1, byte(wire.HelloAuth), 4, 'h', 'o', 'm', 'e', 1, 'x'}); err != nil {
 		t.Fatal(err)
 	}
-	status, _, err := wire.ReadHelloReply(st, wire.HelloAuth)
+	rep, err := wire.ReadHelloReply(st)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status != wire.HelloUnsupportedVersion {
-		t.Fatalf("reply = %v, want unsupported_version", status)
+	if rep.Status != wire.HelloUnsupportedVersion {
+		t.Fatalf("reply = %v, want unsupported_version", rep.Status)
 	}
 }
 
@@ -407,6 +413,29 @@ func TestDialReportsDestinationFailure(t *testing.T) {
 	// The failed stream must not break the session.
 	st := h.dial(echoServer(t))
 	st.Close()
+}
+
+func TestExitRefusesLocalDestinations(t *testing.T) {
+	h := newHarness(t)
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	defer func() { stop(); <-done }()
+	// No Allow list: the deny list applies in full.
+	go func() {
+		done <- exit.Run(ctx, exit.Config{Name: "home", Credential: homeCredential, Dial: h.dialer(h.addr), Logger: quietLogger()})
+	}()
+	h.waitConnected(true, 5*time.Second)
+
+	_, port := splitHostPort(t, echoServer(t))
+	for _, host := range []string{"192.168.1.1", "localhost", "127.0.0.1", "169.254.169.254", "10.0.0.1", "::1"} {
+		dctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := h.srv.Dial(dctx, "home", wire.Open{Host: host, Port: port})
+		cancel()
+		var oe *wire.OpenError
+		if !errors.As(err, &oe) || oe.Status != wire.OpenDenied {
+			t.Errorf("exit dial to %s = %v, want denied", host, err)
+		}
+	}
 }
 
 func TestDialUnknownExit(t *testing.T) {

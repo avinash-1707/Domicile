@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"strconv"
 	"time"
 
@@ -33,11 +34,6 @@ const (
 	stableSession = 30 * time.Second
 )
 
-// Dialer connects to destinations. *net.Dialer satisfies it.
-type Dialer interface {
-	DialContext(ctx context.Context, network, address string) (net.Conn, error)
-}
-
 // Config configures an exit.
 type Config struct {
 	Name       string
@@ -46,8 +42,11 @@ type Config struct {
 	// Dial opens a new session to the server.
 	Dial func(ctx context.Context) (tunnel.Session, error)
 
-	// Dialer connects to destinations. Defaults to a *net.Dialer.
-	Dialer Dialer
+	// Allow re-opens local destinations the deny list would refuse, such as
+	// one device on the home LAN. It is set on the device only; the server
+	// cannot change it.
+	Allow []netip.Prefix
+
 	// DestinationTimeout bounds DNS resolution plus TCP connect per stream.
 	DestinationTimeout time.Duration
 
@@ -58,9 +57,7 @@ type Config struct {
 // backoff after any failure except ErrUnauthorized. It returns nil when ctx
 // is cancelled.
 func Run(ctx context.Context, cfg Config) error {
-	if cfg.Dialer == nil {
-		cfg.Dialer = &net.Dialer{}
-	}
+
 	if cfg.DestinationTimeout == 0 {
 		cfg.DestinationTimeout = defaultDestinationTimeout
 	}
@@ -68,11 +65,18 @@ func Run(ctx context.Context, cfg Config) error {
 		cfg.Logger = slog.Default()
 	}
 	log := cfg.Logger.With("exit", cfg.Name)
+	// The deny list is part of the dialer itself, so no code path can
+	// connect to a destination without passing it.
+	local := newLocalNets()
+	dialer := &net.Dialer{Control: guard(cfg.Allow, local)}
+	// Extra MPTCP subflows would be opened by the kernel without passing
+	// through Control.
+	dialer.SetMultipathTCP(false)
 	b := newBackoff()
 
 	for {
 		start := time.Now()
-		err := runSession(ctx, cfg, log)
+		err := runSession(ctx, cfg, dialer, local, log)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -92,7 +96,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 }
 
-func runSession(ctx context.Context, cfg Config, log *slog.Logger) error {
+func runSession(ctx context.Context, cfg Config, dialer *net.Dialer, local *localNets, log *slog.Logger) error {
 	sess, err := cfg.Dial(ctx)
 	if err != nil {
 		return fmt.Errorf("connect to server: %w", err)
@@ -103,8 +107,14 @@ func runSession(ctx context.Context, cfg Config, log *slog.Logger) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	if _, err := hello(ctx, sess, wire.Hello{Kind: wire.HelloAuth, Name: cfg.Name, Secret: cfg.Credential}); err != nil {
+	rep, err := hello(ctx, sess, wire.Hello{Kind: wire.HelloAuth, Name: cfg.Name, Secret: cfg.Credential})
+	if err != nil {
 		return err
+	}
+	// The server sees this device's public address; on a public-IPv4 line
+	// that is the home router, so the exit must refuse to dial it.
+	if ip, err := netip.ParseAddr(rep.Observed); err == nil {
+		local.setPublic(ip)
 	}
 	log.Info("connected to server")
 
@@ -113,7 +123,7 @@ func runSession(ctx context.Context, cfg Config, log *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("session ended: %w", err)
 		}
-		go serveStream(ctx, st, cfg, log)
+		go serveStream(ctx, st, cfg, dialer, log)
 	}
 }
 
@@ -126,45 +136,51 @@ func Join(ctx context.Context, dial func(context.Context) (tunnel.Session, error
 		return "", fmt.Errorf("connect to server: %w", err)
 	}
 	defer sess.Close()
-	cred, err := hello(ctx, sess, wire.Hello{Kind: wire.HelloJoin, Name: name, Secret: token})
+	rep, err := hello(ctx, sess, wire.Hello{Kind: wire.HelloJoin, Name: name, Secret: token})
 	if errors.Is(err, ErrUnauthorized) {
 		return "", ErrJoinRejected
 	}
-	return cred, err
+	if err != nil {
+		return "", err
+	}
+	if rep.Credential == "" {
+		return "", errors.New("server accepted the join but sent no credential")
+	}
+	return rep.Credential, nil
 }
 
-// hello sends h and returns the credential a successful join carries.
-func hello(ctx context.Context, sess tunnel.Session, h wire.Hello) (string, error) {
+// hello sends h and returns the server's accepting reply.
+func hello(ctx context.Context, sess tunnel.Session, h wire.Hello) (wire.HelloReply, error) {
 	ctx, cancel := context.WithTimeout(ctx, helloTimeout)
 	defer cancel()
 	st, err := sess.OpenStream(ctx)
 	if err != nil {
-		return "", fmt.Errorf("open hello stream: %w", err)
+		return wire.HelloReply{}, fmt.Errorf("open hello stream: %w", err)
 	}
 	defer st.Close()
 	stop := context.AfterFunc(ctx, func() { st.Close() })
 	defer stop()
 
 	if err := wire.WriteHello(st, h); err != nil {
-		return "", fmt.Errorf("send hello: %w", err)
+		return wire.HelloReply{}, fmt.Errorf("send hello: %w", err)
 	}
-	status, cred, err := wire.ReadHelloReply(st, h.Kind)
+	rep, err := wire.ReadHelloReply(st)
 	if err != nil {
-		return "", fmt.Errorf("read hello reply: %w", err)
+		return wire.HelloReply{}, fmt.Errorf("read hello reply: %w", err)
 	}
-	switch status {
+	switch rep.Status {
 	case wire.HelloOK:
-		return cred, nil
+		return rep, nil
 	case wire.HelloUnauthorized:
-		return "", ErrUnauthorized
+		return wire.HelloReply{}, ErrUnauthorized
 	case wire.HelloUnsupportedVersion:
-		return "", fmt.Errorf("server rejected frame version %d: %w", wire.Version, wire.ErrVersion)
+		return wire.HelloReply{}, fmt.Errorf("server rejected frame version %d: %w", wire.Version, wire.ErrVersion)
 	default:
-		return "", fmt.Errorf("hello rejected: %s", status)
+		return wire.HelloReply{}, fmt.Errorf("hello rejected: %s", rep.Status)
 	}
 }
 
-func serveStream(ctx context.Context, st tunnel.Stream, cfg Config, log *slog.Logger) {
+func serveStream(ctx context.Context, st tunnel.Stream, cfg Config, dialer *net.Dialer, log *slog.Logger) {
 	open, err := wire.ReadOpen(st)
 	if err != nil {
 		log.Warn("bad open frame", "err", err)
@@ -174,9 +190,12 @@ func serveStream(ctx context.Context, st tunnel.Stream, cfg Config, log *slog.Lo
 	dst := net.JoinHostPort(open.Host, strconv.Itoa(int(open.Port)))
 
 	dctx, cancel := context.WithTimeout(ctx, cfg.DestinationTimeout)
-	conn, err := cfg.Dialer.DialContext(dctx, "tcp", dst)
+	conn, err := dialer.DialContext(dctx, "tcp", dst)
 	cancel()
 	status := wire.DialStatus(err)
+	if errors.Is(err, errDenied) {
+		status = wire.OpenDenied
+	}
 	if err == nil {
 		if _, ok := conn.(tunnel.HalfCloser); !ok {
 			conn.Close()

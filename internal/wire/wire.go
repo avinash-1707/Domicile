@@ -7,8 +7,9 @@
 //
 //	version | kind u8 | nameLen u8 | name | secretLen u8 | secret
 //
-// HelloReply (server → exit): status u8, then credLen u8 | credential for a
-// successful join.
+// HelloReply (server → exit): status u8; on ok also
+//
+//	credLen u8 | credential (empty unless joining) | addrLen u8 | observed addr
 //
 // Open (server → exit, first bytes of every proxied stream):
 //
@@ -25,8 +26,8 @@ import (
 )
 
 // Version is the frame format version this build speaks. 2 added the Hello
-// kind byte for joins.
-const Version = 2
+// kind byte for joins; 3 added the observed address to the reply.
+const Version = 3
 
 // ErrVersion means the peer speaks a different frame version.
 var ErrVersion = errors.New("wire: unsupported frame version")
@@ -119,37 +120,64 @@ func (s HelloStatus) String() string {
 	}
 }
 
-// WriteHelloReply writes the server's answer. credential is sent only with
-// HelloOK in reply to a HelloJoin.
-func WriteHelloReply(w io.Writer, s HelloStatus, credential string) error {
-	buf := []byte{byte(s)}
-	if s == HelloOK && credential != "" {
-		if err := checkField("credential", credential); err != nil {
-			return err
+// HelloReply is the server's answer to a Hello.
+type HelloReply struct {
+	Status HelloStatus
+	// Credential is the new long-lived credential, after a join only.
+	Credential string
+	// Observed is the address the server sees the exit connect from. The
+	// exit refuses to dial it: on a public-IPv4 line it is the home router.
+	Observed string
+}
+
+// WriteHelloReply writes r. Credential and Observed are sent only with
+// HelloOK.
+func WriteHelloReply(w io.Writer, r HelloReply) error {
+	buf := []byte{byte(r.Status)}
+	if r.Status == HelloOK {
+		for _, f := range []string{r.Credential, r.Observed} {
+			if len(f) > MaxField {
+				return fmt.Errorf("wire: hello reply field longer than %d bytes", MaxField)
+			}
+			buf = append(buf, byte(len(f)))
+			buf = append(buf, f...)
 		}
-		buf = append(buf, byte(len(credential)))
-		buf = append(buf, credential...)
 	}
 	_, err := w.Write(buf)
 	return err
 }
 
-// ReadHelloReply reads the server's answer to a Hello of the given kind; a
-// successful join also returns the new credential.
-func ReadHelloReply(r io.Reader, kind HelloKind) (HelloStatus, string, error) {
+// ReadHelloReply reads the server's answer.
+func ReadHelloReply(r io.Reader) (HelloReply, error) {
 	var b [1]byte
 	if _, err := io.ReadFull(r, b[:]); err != nil {
-		return 0, "", err
+		return HelloReply{}, err
 	}
-	s := HelloStatus(b[0])
-	if s != HelloOK || kind != HelloJoin {
-		return s, "", nil
+	rep := HelloReply{Status: HelloStatus(b[0])}
+	if rep.Status != HelloOK {
+		return rep, nil
 	}
-	cred, err := readField(r, "credential")
-	if err != nil {
-		return 0, "", err
+	var err error
+	if rep.Credential, err = readOptional(r); err != nil {
+		return HelloReply{}, err
 	}
-	return s, cred, nil
+	if rep.Observed, err = readOptional(r); err != nil {
+		return HelloReply{}, err
+	}
+	return rep, nil
+}
+
+// readOptional reads a length-prefixed field that may be empty.
+func readOptional(r io.Reader) (string, error) {
+	var n [1]byte
+	if _, err := io.ReadFull(r, n[:]); err != nil {
+		return "", err
+	}
+	b := make([]byte, n[0])
+	if _, err := io.ReadFull(r, b); err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // Open asks the exit to connect to Host:Port. Host is a hostname or an IP

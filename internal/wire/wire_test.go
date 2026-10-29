@@ -28,24 +28,19 @@ func TestHelloRoundTrip(t *testing.T) {
 }
 
 func TestHelloReplyRoundTrip(t *testing.T) {
-	tests := []struct {
-		status   HelloStatus
-		cred     string
-		kind     HelloKind
-		wantCred string
-	}{
-		{HelloOK, "", HelloAuth, ""},
-		{HelloOK, "new-credential", HelloJoin, "new-credential"},
-		{HelloUnauthorized, "", HelloJoin, ""},
-	}
-	for _, tt := range tests {
+	for _, want := range []HelloReply{
+		{Status: HelloOK, Observed: "203.0.113.7"},
+		{Status: HelloOK, Credential: "new-credential", Observed: "2001:db8::7"},
+		{Status: HelloOK},
+		{Status: HelloUnauthorized},
+	} {
 		var buf bytes.Buffer
-		if err := WriteHelloReply(&buf, tt.status, tt.cred); err != nil {
+		if err := WriteHelloReply(&buf, want); err != nil {
 			t.Fatal(err)
 		}
-		s, cred, err := ReadHelloReply(&buf, tt.kind)
-		if err != nil || s != tt.status || cred != tt.wantCred {
-			t.Fatalf("got %v %q %v, want %v %q", s, cred, err, tt.status, tt.wantCred)
+		got, err := ReadHelloReply(&buf)
+		if err != nil || got != want {
+			t.Fatalf("got %+v, %v; want %+v", got, err, want)
 		}
 	}
 }

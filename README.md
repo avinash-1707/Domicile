@@ -59,7 +59,7 @@ It prints a table, supports `--json`, and exits non-zero when a check fails.
 - The VPS runs one local proxy port that speaks SOCKS5 and HTTP CONNECT, bound to `127.0.0.1` and protected by credentials.
 - Rules match domains and their subdomains. No match means the traffic goes direct.
 - If the home device is offline, matched traffic fails closed by default instead of silently using the datacenter IP. You can allow a direct fallback per rule.
-- The home agent refuses to connect to private, loopback, link-local and cloud-metadata addresses, so an agent on the VPS cannot reach your router or other devices on your LAN.
+- The home agent refuses to connect to private, loopback, link-local and cloud-metadata addresses, so an agent on the VPS cannot reach your router or other devices on your LAN. The check runs on the resolved address, so DNS tricks do not get around it, and it also covers the device's own networks (including IPv6 global addresses) and your public address, which on many lines is the router itself. `domicile agent -allow 192.168.1.50` opens a specific device if you want one reachable.
 - DNS for routed domains is resolved on the home device.
 - domicile does not intercept TLS, so it sees the hostnames you connect to and never the page content.
 

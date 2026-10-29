@@ -7,8 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/avinash-1707/domicile/internal/certs"
 	"github.com/avinash-1707/domicile/internal/exit"
@@ -29,6 +31,7 @@ func runAgent(ctx context.Context, args []string, log *slog.Logger) error {
 	}
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	stateDir := fs.String("state-dir", defaultStateDir(), "directory for this device's pairing")
+	allowList := fs.String("allow", "", "comma-separated IPs or CIDRs on the local network the exit may reach (default: none; the LAN, loopback and cloud metadata are refused)")
 	path := func() string { return filepath.Join(*stateDir, agentFile) }
 
 	var a state.Agent
@@ -72,10 +75,18 @@ func runAgent(ctx context.Context, args []string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("%s: server fingerprint: %w", path(), err)
 	}
+	allow, err := parseAllow(*allowList)
+	if err != nil {
+		return fmt.Errorf("-allow: %w", err)
+	}
+	if len(allow) > 0 {
+		log.Warn("exit may reach these local destinations", "allow", *allowList)
+	}
 	err = exit.Run(ctx, exit.Config{
 		Name:       a.Name,
 		Credential: a.Credential,
 		Dial:       dialer(a.Server, pin),
+		Allow:      allow,
 		Logger:     log,
 	})
 	if errors.Is(err, exit.ErrUnauthorized) {
@@ -106,6 +117,38 @@ func pair(ctx context.Context, code, path string, log *slog.Logger) (state.Agent
 	}
 	log.Info("paired with server", "exit", c.Name, "server", c.Server, "saved", path)
 	return a, nil
+}
+
+// parseAllow parses "192.168.1.50,10.0.0.0/24". A bare IP means that one
+// address. Prefixes broader than /8 (IPv4) or /32 (IPv6) are refused: they
+// would quietly switch the deny list off.
+func parseAllow(s string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for item := range strings.SplitSeq(s, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if p, err := netip.ParsePrefix(item); err == nil {
+			if p.Addr().Is4In6() && p.Bits() >= 96 {
+				// Destinations are compared as IPv4, so a mapped prefix
+				// must be too, or it would silently match nothing.
+				p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+			}
+			if (p.Addr().Is4() && p.Bits() < 8) || (p.Addr().Is6() && p.Bits() < 32) {
+				return nil, fmt.Errorf("%q is too broad; list the specific devices or subnets to open", item)
+			}
+			out = append(out, p.Masked())
+			continue
+		}
+		ip, err := netip.ParseAddr(item)
+		if err != nil {
+			return nil, fmt.Errorf("%q is not an IP or CIDR", item)
+		}
+		ip = ip.Unmap()
+		out = append(out, netip.PrefixFrom(ip, ip.BitLen()))
+	}
+	return out, nil
 }
 
 // lockAgent allows one agent per device: two would keep replacing each

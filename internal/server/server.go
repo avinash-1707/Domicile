@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -216,7 +217,11 @@ func (s *Server) authenticate(ctx context.Context, sess tunnel.Session) (string,
 		}
 		digest = want
 	}
-	if err := wire.WriteHelloReply(st, wire.HelloOK, issued); err != nil {
+	observed := ""
+	if ap, err := netip.ParseAddrPort(sess.RemoteAddr().String()); err == nil {
+		observed = ap.Addr().Unmap().String()
+	}
+	if err := wire.WriteHelloReply(st, wire.HelloReply{Status: wire.HelloOK, Credential: issued, Observed: observed}); err != nil {
 		return "", "", fmt.Errorf("write hello reply: %w", err)
 	}
 	if err := st.CloseWrite(); err != nil {
@@ -244,7 +249,7 @@ func (s *Server) Revalidate() {
 
 // reject sends a final status and waits briefly for the exit to read it.
 func reject(st tunnel.Stream, sess tunnel.Session, status wire.HelloStatus) {
-	if err := wire.WriteHelloReply(st, status, ""); err != nil {
+	if err := wire.WriteHelloReply(st, wire.HelloReply{Status: status}); err != nil {
 		return
 	}
 	_ = st.CloseWrite()

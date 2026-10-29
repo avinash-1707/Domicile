@@ -160,3 +160,27 @@ func TestOneAgentPerDevice(t *testing.T) {
 	}
 	again()
 }
+
+func TestParseAllow(t *testing.T) {
+	got, err := parseAllow(" 192.168.1.50, 10.0.0.0/24 ,fd00::1,,::ffff:192.168.1.9,::ffff:192.168.2.0/120")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"192.168.1.50/32", "10.0.0.0/24", "fd00::1/128", "192.168.1.9/32", "192.168.2.0/24"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for i := range want {
+		if got[i].String() != want[i] {
+			t.Errorf("entry %d = %s, want %s", i, got[i], want[i])
+		}
+	}
+	if p, _ := parseAllow(""); len(p) != 0 {
+		t.Fatal("empty allow list is not empty")
+	}
+	for _, bad := range []string{"router.local", "192.168.1.300", "10.0.0.0/33", "0.0.0.0/0", "::/0", "10.0.0.0/7", "2000::/3"} {
+		if _, err := parseAllow(bad); err == nil {
+			t.Errorf("parseAllow(%q) accepted", bad)
+		}
+	}
+}
