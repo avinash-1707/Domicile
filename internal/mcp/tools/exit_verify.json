@@ -1,0 +1,11 @@
+{
+  "name": "exit_verify",
+  "description": "Check what websites see through a home exit: its public IP compared with the VPS's, whether the network looks residential or datacenter (best-effort hint), where DNS is resolved, and the timezone a browser should use. Takes a few seconds. Read-only.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "exit": {"type": "string", "description": "Exit to check; omit to check all."}
+    },
+    "additionalProperties": false
+  }
+}

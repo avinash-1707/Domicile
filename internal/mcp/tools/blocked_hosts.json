@@ -1,0 +1,9 @@
+{
+  "name": "blocked_hosts",
+  "description": "List hosts reported as blocking the VPS's datacenter IP, each with the `domicile rule add` command a human can run to route it through home. Read-only.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}

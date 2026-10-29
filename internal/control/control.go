@@ -53,22 +53,36 @@ type Status struct {
 	RulesError string `json:"rules_error,omitempty"`
 }
 
+// Blocked is a host an agent reported as blocking the datacenter IP. It is a
+// suggestion for a human: nothing here changes routing.
+type Blocked struct {
+	Host    string    `json:"host"`
+	Reason  string    `json:"reason"`
+	Count   int       `json:"count"`
+	Last    time.Time `json:"last"`
+	Suggest string    `json:"suggest"`
+}
+
 // Handler answers control requests; the server command implements it.
 type Handler interface {
 	Status() Status
 	DialExit(ctx context.Context, exit string, dst wire.Open) (tunnel.Stream, error)
+	ReportBlocked(host, reason string) error
+	Blocked() []Blocked
 }
 
 type request struct {
-	Op   string `json:"op"`
-	Exit string `json:"exit,omitempty"`
-	Host string `json:"host,omitempty"`
-	Port uint16 `json:"port,omitempty"`
+	Op     string `json:"op"`
+	Exit   string `json:"exit,omitempty"`
+	Host   string `json:"host,omitempty"`
+	Port   uint16 `json:"port,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 type reply struct {
-	Error  string  `json:"error,omitempty"`
-	Status *Status `json:"status,omitempty"`
+	Error   string    `json:"error,omitempty"`
+	Status  *Status   `json:"status,omitempty"`
+	Blocked []Blocked `json:"blocked,omitempty"`
 }
 
 // ErrInUse means another server is already answering on the socket.
@@ -151,6 +165,14 @@ func handle(ctx context.Context, c *net.UnixConn, h Handler, log *slog.Logger) {
 	case "status":
 		st := h.Status()
 		writeReply(c, reply{Status: &st})
+	case "report_blocked":
+		if err := h.ReportBlocked(req.Host, req.Reason); err != nil {
+			writeReply(c, reply{Error: err.Error()})
+			return
+		}
+		writeReply(c, reply{})
+	case "blocked":
+		writeReply(c, reply{Blocked: h.Blocked()})
 	case "dial":
 		dctx, cancel := context.WithTimeout(ctx, requestTimeout)
 		st, err := h.DialExit(dctx, req.Exit, wire.Open{Host: req.Host, Port: req.Port})
@@ -216,6 +238,34 @@ func (cl Client) Status(ctx context.Context) (Status, error) {
 		return Status{}, errors.New("server sent no status")
 	}
 	return *r.Status, nil
+}
+
+// ReportBlocked records that host blocked the datacenter IP.
+func (cl Client) ReportBlocked(ctx context.Context, host, reason string) error {
+	_, err := cl.simple(ctx, request{Op: "report_blocked", Host: host, Reason: reason})
+	return err
+}
+
+// Blocked lists reported hosts with suggested rules.
+func (cl Client) Blocked(ctx context.Context) ([]Blocked, error) {
+	r, err := cl.simple(ctx, request{Op: "blocked"})
+	return r.Blocked, err
+}
+
+func (cl Client) simple(ctx context.Context, req request) (reply, error) {
+	c, br, err := cl.request(ctx, req)
+	if err != nil {
+		return reply{}, err
+	}
+	defer c.Close()
+	var r reply
+	if err := readReply(br, &r); err != nil {
+		return reply{}, err
+	}
+	if r.Error != "" {
+		return reply{}, errors.New(r.Error)
+	}
+	return r, nil
 }
 
 // DialExit opens a connection to host:port through the named exit.

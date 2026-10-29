@@ -1,0 +1,9 @@
+{
+  "name": "exit_status",
+  "description": "Show domicile's home exits (connected or not, since when) and the active routing rules: which domains leave through a home connection and which go direct from the VPS. Read-only.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}

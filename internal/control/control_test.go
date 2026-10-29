@@ -30,6 +30,17 @@ func (fakeHandler) Status() Status {
 	}
 }
 
+func (fakeHandler) ReportBlocked(host, _ string) error {
+	if host == "" {
+		return errors.New("empty host")
+	}
+	return nil
+}
+
+func (fakeHandler) Blocked() []Blocked {
+	return []Blocked{{Host: "reddit.com", Count: 2, Suggest: "domicile rule add reddit.com -via home"}}
+}
+
 func (fakeHandler) DialExit(ctx context.Context, exit string, dst wire.Open) (tunnel.Stream, error) {
 	if exit != "home" {
 		return nil, errors.New("exit is not connected")
@@ -105,6 +116,17 @@ func TestExitsAndDial(t *testing.T) {
 
 	if _, err := cl.DialExit(ctx, "garage", "127.0.0.1", port); err == nil {
 		t.Fatal("dial through an unknown exit succeeded")
+	}
+
+	if err := cl.ReportBlocked(ctx, "reddit.com", "403"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.ReportBlocked(ctx, "", "403"); err == nil {
+		t.Fatal("handler error not returned")
+	}
+	b, err := cl.Blocked(ctx)
+	if err != nil || len(b) != 1 || b[0].Host != "reddit.com" {
+		t.Fatalf("Blocked = %+v, %v", b, err)
 	}
 }
 

@@ -1,0 +1,13 @@
+{
+  "name": "report_blocked",
+  "description": "Report that a site blocked you (CAPTCHA, 403, login refused) while going direct from the VPS. This only records a suggestion for the user; it never changes routing. Tell the user the suggested command so they can decide.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "host": {"type": "string", "description": "The site's hostname, e.g. www.reddit.com."},
+      "reason": {"type": "string", "description": "What happened, e.g. 'HTTP 403' or 'Cloudflare challenge'."}
+    },
+    "required": ["host"],
+    "additionalProperties": false
+  }
+}
