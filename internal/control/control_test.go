@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/avinash-1707/domicile/internal/rules"
 	"github.com/avinash-1707/domicile/internal/tunnel"
 	"github.com/avinash-1707/domicile/internal/wire"
 )
@@ -21,8 +22,12 @@ import (
 // a stream, standing in for a path through an exit.
 type fakeHandler struct{}
 
-func (fakeHandler) Exits() []ExitStatus {
-	return []ExitStatus{{Name: "home", Connected: true, Paired: true}}
+func (fakeHandler) Status() Status {
+	since := time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
+	return Status{
+		Exits: []ExitStatus{{Name: "home", Connected: true, Paired: true, ConnectedSince: &since}},
+		Rules: []rules.Rule{{Match: "reddit.com", Via: "home", OnExitDown: rules.FailClosed}},
+	}
 }
 
 func (fakeHandler) DialExit(ctx context.Context, exit string, dst wire.Open) (tunnel.Stream, error) {
@@ -65,9 +70,10 @@ func TestExitsAndDial(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	exits, err := cl.Exits(ctx)
-	if err != nil || len(exits) != 1 || exits[0].Name != "home" || !exits[0].Connected {
-		t.Fatalf("Exits = %+v, %v", exits, err)
+	st, err := cl.Status(ctx)
+	if err != nil || len(st.Exits) != 1 || st.Exits[0].Name != "home" || !st.Exits[0].Connected ||
+		st.Exits[0].ConnectedSince == nil || len(st.Rules) != 1 || st.Rules[0].Match != "reddit.com" {
+		t.Fatalf("Status = %+v, %v", st, err)
 	}
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")

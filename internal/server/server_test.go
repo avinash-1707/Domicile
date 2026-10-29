@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -39,6 +40,7 @@ type harness struct {
 	srv       *server.Server
 	addr      string
 	stop      func()
+	logOut    io.Writer
 }
 
 // The exit "home" is paired with this credential in every harness.
@@ -58,7 +60,7 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, cert: cert, pin: pin, statePath: filepath.Join(t.TempDir(), "state.json")}
+	h := &harness{t: t, cert: cert, pin: pin, statePath: filepath.Join(t.TempDir(), "state.json"), logOut: io.Discard}
 	err = state.Create(h.statePath, state.State{
 		Exits: map[string]state.Exit{"home": {CredentialSHA256: secret.Digest(homeCredential)}},
 		Users: map[string]state.User{},
@@ -109,7 +111,7 @@ func (h *harness) start(addr string) {
 		h.t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	srv := server.New(server.Config{Auth: h.live, Logger: quietLogger()})
+	srv := server.New(server.Config{Auth: h.live, Logger: slog.New(slog.NewTextHandler(h.logOut, &slog.HandlerOptions{Level: slog.LevelDebug}))})
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
@@ -191,6 +193,60 @@ func TestJoinThenConnect(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func TestLogsNeverContainSecrets(t *testing.T) {
+	h := newHarness(t)
+	var logs syncBuffer
+	h.logOut = &logs
+	addr := h.addr
+	h.stop()
+	h.start(addr) // restart with the capturing logger
+
+	tok := h.issueToken("office", time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cred, err := exit.Join(ctx, h.dialer(h.addr), "office", tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exit.Join(ctx, h.dialer(h.addr), "office", tok) // reuse: rejected and logged
+	h.runExit(h.addr, homeCredential)
+	h.waitConnected(true, 5*time.Second)
+	exit.Join(ctx, h.dialer(h.addr), "home", "guessed-token-value")
+	wrong := exit.Run(ctx, exit.Config{Name: "home", Credential: "wrong-credential-value", Dial: h.dialer(h.addr), Logger: quietLogger()})
+	if !errors.Is(wrong, exit.ErrUnauthorized) {
+		t.Fatalf("wrong credential = %v", wrong)
+	}
+
+	// Covers the tunnel server's log; the proxy has its own test.
+	out := logs.String()
+	for _, secret := range []string{tok, cred, homeCredential, "guessed-token-value", "wrong-credential-value"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("server log contains a secret:\n%s", out)
+		}
+	}
+	if !strings.Contains(out, "exit paired") || !strings.Contains(out, "exit rejected") {
+		t.Fatalf("expected events missing from the log:\n%s", out)
+	}
+}
+
+// syncBuffer is a goroutine-safe log sink.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func TestExpiredTokenRejected(t *testing.T) {

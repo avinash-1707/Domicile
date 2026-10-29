@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/avinash-1707/domicile/internal/certs"
@@ -64,14 +66,21 @@ func runServer(ctx context.Context, args []string, log *slog.Logger) error {
 		}
 		log.Warn("no rules file; all traffic goes direct from the VPS", "config", *configPath)
 	}
-	conf, err := rules.Load(*configPath)
-	if err != nil {
-		return err
+	// Read once and parse and hash the same bytes, so a change landing
+	// during startup is picked up by the first reload.
+	ruleData, err := os.ReadFile(*configPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read rules: %w", err)
 	}
-	for _, r := range conf.Rules {
-		if _, ok := live.State().Exits[r.Via]; !ok {
-			return fmt.Errorf("rule for %s uses exit %q, which has not been added; run `domicile add %s`", r.Match, r.Via, r.Via)
+	conf := rules.Config{Rules: []rules.Rule{}}
+	if ruleData != nil {
+		if conf, err = rules.Parse(ruleData, *configPath); err != nil {
+			return err
 		}
+	}
+	knownExit := func(exit string) bool { _, ok := live.State().Exits[exit]; return ok }
+	if err := checkRuleExits(conf, knownExit); err != nil {
+		return err
 	}
 	cert, err := certs.LoadOrCreate(*stateDir)
 	if err != nil {
@@ -112,9 +121,8 @@ func runServer(ctx context.Context, args []string, log *slog.Logger) error {
 	}
 
 	srv := server.New(server.Config{Auth: live, Logger: log})
-	// SIMPLIFIED: rules are read once at start; `domicile rule` changes need
-	// a restart until the control socket can reload them live.
 	router := route.New(rules.NewTable(conf), srv, log, route.Options{BlockLocalDirect: exposed})
+	lr := &liveRules{path: *configPath, router: router, log: log, conf: conf, sum: sha256.Sum256(ruleData), known: knownExit}
 	prx, err := proxy.New(proxy.Config{CheckUser: live.CheckUser, Dial: router.Dial, Logger: log})
 	if err != nil {
 		l.Close()
@@ -135,9 +143,13 @@ func runServer(ctx context.Context, args []string, log *slog.Logger) error {
 	go func() { errc <- srv.Serve(ctx, l) }()
 	if cl != nil {
 		loops++
-		go func() { errc <- control.Serve(ctx, cl, controlHandler{srv: srv, live: live}, log) }()
+		h := controlHandler{
+			srv: srv, live: live, rules: lr, started: time.Now(),
+			tunnelAddr: l.Addr().String(), proxyAddr: pl.Addr().String(), fingerprint: pin.String(),
+		}
+		go func() { errc <- control.Serve(ctx, cl, h, log) }()
 	}
-	go watchState(ctx, live, srv, log)
+	go watch(ctx, live, srv, lr, log)
 	errs := []error{<-errc}
 	cancel()
 	for range loops - 1 {
@@ -154,29 +166,131 @@ func isLoopback(a net.Addr) bool {
 
 // controlHandler answers the control socket from the live server.
 type controlHandler struct {
-	srv  *server.Server
-	live *state.Live
+	srv         *server.Server
+	live        *state.Live
+	rules       *liveRules
+	started     time.Time
+	tunnelAddr  string
+	proxyAddr   string
+	fingerprint string
 }
 
-func (h controlHandler) Exits() []control.ExitStatus {
+func (h controlHandler) Status() control.Status {
 	exits := h.live.State().Exits
 	out := make([]control.ExitStatus, 0, len(exits))
 	for name, e := range exits {
-		out = append(out, control.ExitStatus{Name: name, Connected: h.srv.Connected(name), Paired: e.CredentialSHA256 != ""})
+		es := control.ExitStatus{Name: name, Paired: e.CredentialSHA256 != ""}
+		if since, ok := h.srv.ConnectedSince(name); ok {
+			es.Connected, es.ConnectedSince = true, &since
+		}
+		out = append(out, es)
 	}
 	slices.SortFunc(out, func(a, b control.ExitStatus) int { return strings.Compare(a.Name, b.Name) })
-	return out
+	conf, rerr := h.rules.snapshot()
+	return control.Status{
+		Started:     h.started,
+		TunnelAddr:  h.tunnelAddr,
+		ProxyAddr:   h.proxyAddr,
+		Fingerprint: h.fingerprint,
+		Exits:       out,
+		RulesFile:   h.rules.path,
+		Rules:       append([]rules.Rule{}, conf.Rules...), // never null in JSON
+		RulesError:  rerr,
+	}
 }
 
 func (h controlHandler) DialExit(ctx context.Context, exit string, dst wire.Open) (tunnel.Stream, error) {
 	return h.srv.Dial(ctx, exit, dst)
 }
 
+// liveRules keeps the router's rules in step with the rules file, so
+// `domicile rule add` takes effect on a running server.
+type liveRules struct {
+	path   string
+	router *route.Router
+	known  func(exit string) bool
+	log    *slog.Logger
+
+	mu   sync.Mutex
+	conf rules.Config
+	sum  [sha256.Size]byte
+	err  string
+}
+
+// reload applies the file if its content changed. Anything that cannot be
+// applied keeps the last good rules, so traffic is never rerouted by
+// accident: a half-edited file, a file briefly missing during `git pull` or
+// an editor's save, or a rule naming an exit that has not been added (which
+// startup refuses too). Clearing all rules is `{"rules": []}`.
+func (lr *liveRules) reload() {
+	data, err := os.ReadFile(lr.path)
+	if errors.Is(err, os.ErrNotExist) {
+		lr.fail(errors.New("rules file is missing; still using the previous rules (write {\"rules\": []} to clear them)"))
+		return
+	}
+	if err != nil {
+		lr.fail(err)
+		return
+	}
+	sum := sha256.Sum256(data)
+	lr.mu.Lock()
+	if sum == lr.sum {
+		// Back to what is applied (say, a broken edit was reverted).
+		lr.err = ""
+		lr.mu.Unlock()
+		return
+	}
+	lr.mu.Unlock()
+	// Parse the bytes that were hashed, so the stored hash always describes
+	// the applied rules.
+	conf, err := rules.Parse(data, lr.path)
+	if err != nil {
+		lr.fail(err)
+		return
+	}
+	if err := checkRuleExits(conf, lr.known); err != nil {
+		lr.fail(err)
+		return
+	}
+	lr.router.SetTable(rules.NewTable(conf))
+	lr.mu.Lock()
+	lr.conf, lr.sum, lr.err = conf, sum, ""
+	lr.mu.Unlock()
+	lr.log.Info("rules reloaded", "rules", len(conf.Rules), "config", lr.path)
+}
+
+// checkRuleExits refuses rules naming an exit that has not been added: with
+// fallback_direct such a rule would send its traffic direct.
+func checkRuleExits(conf rules.Config, known func(string) bool) error {
+	for _, r := range conf.Rules {
+		if !known(r.Via) {
+			return fmt.Errorf("rule for %s uses exit %q, which has not been added; run `domicile add %s`", r.Match, r.Via, r.Via)
+		}
+	}
+	return nil
+}
+
+func (lr *liveRules) fail(err error) {
+	lr.mu.Lock()
+	first := lr.err != err.Error()
+	lr.err = err.Error()
+	lr.mu.Unlock()
+	if first {
+		lr.log.Error("rules file not applied; keeping the previous rules", "err", err)
+	}
+}
+
+func (lr *liveRules) snapshot() (rules.Config, string) {
+	lr.mu.Lock()
+	defer lr.mu.Unlock()
+	return lr.conf, lr.err
+}
+
 func defaultControlPath(stateDir string) string { return filepath.Join(stateDir, "control.sock") }
 
-// watchState reloads the state file when the CLI changes it, and drops
-// sessions whose exit was removed or re-paired.
-func watchState(ctx context.Context, live *state.Live, srv *server.Server, log *slog.Logger) {
+// watch reloads the state and rules files when the CLI changes them. A
+// state change drops sessions whose exit was removed or re-paired.
+func watch(ctx context.Context, live *state.Live, srv *server.Server, lr *liveRules, log *slog.Logger) {
 	t := time.NewTicker(stateReloadEvery)
 	defer t.Stop()
 	seen := live.Generation()
@@ -186,10 +300,16 @@ func watchState(ctx context.Context, live *state.Live, srv *server.Server, log *
 			return
 		case <-t.C:
 		}
-		if err := live.Reload(); err != nil {
+		// State first, so `domicile add office && domicile rule add x -via
+		// office` in the same second sees the new exit.
+		err := live.Reload()
+		if err != nil {
 			// Keep serving with the last good state; a half-edited or
 			// unreadable file must not take every exit offline.
 			log.Error("reload state", "err", err)
+		}
+		lr.reload()
+		if err != nil {
 			continue
 		}
 		// Compare generations, not "did this Reload change anything": a

@@ -110,6 +110,7 @@ func TestConfigValidation(t *testing.T) {
 		c    Config
 	}{
 		{"no via", Config{Rules: []Rule{{Match: "a.com"}}}},
+		{"via with escape", Config{Rules: []Rule{{Match: "a.com", Via: "home\x1b[2K"}}}},
 		{"bad on_exit_down", Config{Rules: []Rule{{Match: "a.com", Via: "home", OnExitDown: "retry"}}}},
 		{"duplicate after normalising", Config{Rules: []Rule{{Match: "a.com", Via: "home"}, {Match: "A.com.", Via: "office"}}}},
 	}

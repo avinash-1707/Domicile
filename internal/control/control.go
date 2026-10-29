@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/avinash-1707/domicile/internal/rules"
 	"github.com/avinash-1707/domicile/internal/tunnel"
 	"github.com/avinash-1707/domicile/internal/wire"
 )
@@ -32,14 +33,29 @@ const (
 
 // ExitStatus describes one configured exit.
 type ExitStatus struct {
-	Name      string `json:"name"`
-	Connected bool   `json:"connected"`
-	Paired    bool   `json:"paired"`
+	Name           string     `json:"name"`
+	Connected      bool       `json:"connected"`
+	Paired         bool       `json:"paired"`
+	ConnectedSince *time.Time `json:"connected_since,omitempty"`
+}
+
+// Status is a snapshot of the running server.
+type Status struct {
+	Started     time.Time    `json:"started"`
+	TunnelAddr  string       `json:"tunnel_addr"`
+	ProxyAddr   string       `json:"proxy_addr"`
+	Fingerprint string       `json:"fingerprint"`
+	Exits       []ExitStatus `json:"exits"`
+	RulesFile   string       `json:"rules_file"`
+	Rules       []rules.Rule `json:"rules"`
+	// RulesError is set when the rules file changed but could not be
+	// loaded; the server keeps routing by the last good rules.
+	RulesError string `json:"rules_error,omitempty"`
 }
 
 // Handler answers control requests; the server command implements it.
 type Handler interface {
-	Exits() []ExitStatus
+	Status() Status
 	DialExit(ctx context.Context, exit string, dst wire.Open) (tunnel.Stream, error)
 }
 
@@ -51,8 +67,8 @@ type request struct {
 }
 
 type reply struct {
-	Error string       `json:"error,omitempty"`
-	Exits []ExitStatus `json:"exits,omitempty"`
+	Error  string  `json:"error,omitempty"`
+	Status *Status `json:"status,omitempty"`
 }
 
 // ErrInUse means another server is already answering on the socket.
@@ -132,8 +148,9 @@ func handle(ctx context.Context, c *net.UnixConn, h Handler, log *slog.Logger) {
 		return
 	}
 	switch req.Op {
-	case "exits":
-		writeReply(c, reply{Exits: h.Exits()})
+	case "status":
+		st := h.Status()
+		writeReply(c, reply{Status: &st})
 	case "dial":
 		dctx, cancel := context.WithTimeout(ctx, requestTimeout)
 		st, err := h.DialExit(dctx, req.Exit, wire.Open{Host: req.Host, Port: req.Port})
@@ -181,21 +198,24 @@ type Client struct {
 	Path string
 }
 
-// Exits lists the configured exits.
-func (cl Client) Exits(ctx context.Context) ([]ExitStatus, error) {
-	c, br, err := cl.request(ctx, request{Op: "exits"})
+// Status asks the running server for a snapshot.
+func (cl Client) Status(ctx context.Context) (Status, error) {
+	c, br, err := cl.request(ctx, request{Op: "status"})
 	if err != nil {
-		return nil, err
+		return Status{}, err
 	}
 	defer c.Close()
 	var r reply
 	if err := readReply(br, &r); err != nil {
-		return nil, err
+		return Status{}, err
 	}
 	if r.Error != "" {
-		return nil, errors.New(r.Error)
+		return Status{}, errors.New(r.Error)
 	}
-	return r.Exits, nil
+	if r.Status == nil {
+		return Status{}, errors.New("server sent no status")
+	}
+	return *r.Status, nil
 }
 
 // DialExit opens a connection to host:port through the named exit.

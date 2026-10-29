@@ -50,15 +50,24 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read rules: %w", err)
 	}
+	return Parse(data, path)
+}
+
+// Parse decodes and validates a rules file's bytes; name is used in errors.
+// Callers that also hash the file parse the same bytes they hashed.
+func Parse(data []byte, name string) (Config, error) {
 	var c Config
 	dec := json.NewDecoder(bytes.NewReader(data))
 	// A typo in a field name must not silently drop a rule's intent.
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&c); err != nil {
-		return Config{}, fmt.Errorf("parse %s: %w", path, err)
+		return Config{}, fmt.Errorf("parse %s: %w", name, err)
 	}
 	if err := c.normalize(); err != nil {
-		return Config{}, fmt.Errorf("%s: %w", path, err)
+		return Config{}, fmt.Errorf("%s: %w", name, err)
+	}
+	if c.Rules == nil {
+		c.Rules = []Rule{}
 	}
 	return c, nil
 }
@@ -111,8 +120,8 @@ func (c *Config) normalize() error {
 			return fmt.Errorf("rule %d: %w", i+1, err)
 		}
 		r.Match = m
-		if r.Via == "" {
-			return fmt.Errorf("rule %d (%s): no exit given in \"via\"", i+1, m)
+		if !validExit(r.Via) {
+			return fmt.Errorf("rule %d (%s): \"via\" must be an exit name (letters, digits, '-' or '_')", i+1, m)
 		}
 		switch r.OnExitDown {
 		case "":
@@ -168,6 +177,18 @@ func NormalizeDomain(d string) (string, error) {
 		}
 	}
 	return d, nil
+}
+
+func validExit(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 // canonicalIP returns s in the one form every client path produces, so

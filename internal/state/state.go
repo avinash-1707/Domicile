@@ -174,11 +174,25 @@ func LockFile(path string, timeout time.Duration) (func(), error) {
 	return lockFile(path, timeout)
 }
 
+// LockDir takes an exclusive flock on directory dir itself, so a lock
+// creates no file next to data that is meant to be committed.
+func LockDir(dir string, timeout time.Duration) (func(), error) {
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	return flockWait(f, dir, timeout)
+}
+
 func lockFile(path string, timeout time.Duration) (func(), error) {
 	lf, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err
 	}
+	return flockWait(lf, path, timeout)
+}
+
+func flockWait(lf *os.File, path string, timeout time.Duration) (func(), error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)

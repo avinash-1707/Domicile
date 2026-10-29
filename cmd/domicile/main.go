@@ -23,6 +23,7 @@ Usage:
   domicile remove <exit>                    revoke an exit (disconnects it within a second)
   domicile user add|remove|list             manage proxy users
   domicile server [flags]                   run the VPS side
+  domicile status [-json]                   show exits, connections and active rules
   domicile verify [-exit name] [-json]      check what sites see through each exit
   domicile rule add <domain> -via <exit> [flags]
   domicile rule remove <domain> [-exact]
@@ -55,6 +56,8 @@ func main() {
 		err = runAgent(ctx, args, log)
 	case "rule":
 		err = runRule(args, os.Stdout)
+	case "status":
+		err = runStatus(ctx, args, os.Stdout)
 	case "verify":
 		err = runVerify(ctx, args, os.Stdout)
 	case "init":

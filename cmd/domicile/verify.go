@@ -58,10 +58,11 @@ func verifyCmd(ctx context.Context, args []string, out io.Writer, jsonOut *bool)
 
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	exits, err := cl.Exits(ctx)
+	st, err := cl.Status(ctx)
 	if err != nil {
 		return err
 	}
+	exits := st.Exits
 	if *only != "" {
 		exits = filterExit(exits, *only)
 		if len(exits) == 0 {

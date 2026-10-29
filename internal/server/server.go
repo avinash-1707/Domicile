@@ -61,6 +61,7 @@ type Config struct {
 type liveExit struct {
 	sess   tunnel.Session
 	digest string
+	since  time.Time
 }
 
 // Server tracks connected exits.
@@ -113,6 +114,14 @@ func (s *Server) Serve(ctx context.Context, l tunnel.Listener) error {
 		}
 		go s.admit(ctx, sess, ip)
 	}
+}
+
+// ConnectedSince reports when exit's current session started.
+func (s *Server) ConnectedSince(exit string) (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	le, ok := s.sessions[exit]
+	return le.since, ok
 }
 
 // Connected reports whether exit currently has a live session.
@@ -325,7 +334,7 @@ func (s *Server) register(name string, sess tunnel.Session, digest string) bool 
 		s.log.Info("exit reconnected, replacing old session", "exit", name)
 		old.sess.Close()
 	}
-	s.sessions[name] = liveExit{sess: sess, digest: digest}
+	s.sessions[name] = liveExit{sess: sess, digest: digest, since: time.Now()}
 	return true
 }
 

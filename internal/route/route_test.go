@@ -173,3 +173,20 @@ func TestBlockLocalDirect(t *testing.T) {
 		}
 	}
 }
+
+func TestSetTableSwitchesRouting(t *testing.T) {
+	r, f := router(t, io.Discard)
+	dst := wire.Open{Host: "reddit.com", Port: 443}
+	// No rule yet: direct (reddit.com is not dialled for real here, so use
+	// the path only).
+	tb := rules.NewTable(rules.Config{Rules: []rules.Rule{{Match: "reddit.com", Via: "home", OnExitDown: rules.FailClosed}}})
+	r.SetTable(tb)
+	if _, path, _ := r.Dial(context.Background(), dst); path != "home" || f.asked.Load() != "home" {
+		t.Fatalf("after SetTable: path %q; want the new rule applied", path)
+	}
+	r.SetTable(rules.NewTable(rules.Config{}))
+	l := listener(t)
+	if _, path, _ := r.Dial(context.Background(), l); path != Direct {
+		t.Fatalf("after clearing rules: path %q, want direct", path)
+	}
+}

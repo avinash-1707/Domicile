@@ -5,10 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"text/tabwriter"
+	"time"
 
 	"github.com/avinash-1707/domicile/internal/rules"
+	"github.com/avinash-1707/domicile/internal/state"
 )
 
 // configFile is the rules file's name inside the state directory.
@@ -47,6 +50,11 @@ func ruleAdd(args []string, out io.Writer) error {
 		return errors.New("-via is required: which exit should carry " + domain)
 	}
 
+	unlock, err := lockRules(*configPath)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	c, err := rules.Load(*configPath)
 	if err != nil {
 		return err
@@ -74,7 +82,7 @@ func ruleAdd(args []string, out io.Writer) error {
 	if earlier, ok := rules.NewTable(rules.Config{Rules: c.Rules[:pos]}).Match(r.Match); ok {
 		fmt.Fprintf(out, "warning: the earlier rule %s matches first, so this rule has no effect; rules are first-match\n", describe(earlier))
 	}
-	fmt.Fprintf(out, "wrote %s\nRestart domicile server to apply (it reads -config, default <state-dir>/%s).\n", absPath(*configPath), configFile)
+	fmt.Fprintf(out, "wrote %s\nA running server applies it within a second (it reads -config, default <state-dir>/%s).\n", absPath(*configPath), configFile)
 	return nil
 }
 
@@ -89,6 +97,11 @@ func ruleRemove(args []string, out io.Writer) error {
 	if domain, err = rules.NormalizeDomain(domain); err != nil {
 		return err
 	}
+	unlock, err := lockRules(*configPath)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	c, err := rules.Load(*configPath)
 	if err != nil {
 		return err
@@ -101,7 +114,7 @@ func ruleRemove(args []string, out io.Writer) error {
 	if err := c.Save(*configPath); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "removed rule: %s\nwrote %s\nRestart domicile server to apply.\n", describe(rules.Rule{Match: domain, Exact: *exact}), absPath(*configPath))
+	fmt.Fprintf(out, "removed rule: %s\nwrote %s\nA running server applies it within a second.\n", describe(rules.Rule{Match: domain, Exact: *exact}), absPath(*configPath))
 	return nil
 }
 
@@ -122,7 +135,7 @@ func ruleList(args []string, out io.Writer) error {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "MATCH\tVIA\tIF EXIT DOWN\tNOTE")
 	for _, r := range c.Rules {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", describe(r), r.Via, r.OnExitDown, r.Note)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", describe(r), r.Via, r.OnExitDown, printable(r.Note))
 	}
 	fmt.Fprintln(tw, "(anything else)\tdirect\t\t")
 	return tw.Flush()
@@ -153,6 +166,16 @@ func positionalAndFlags(fs *flag.FlagSet, args []string, usage string) (string, 
 		return "", errors.New("usage: domicile " + usage)
 	}
 	return domain, nil
+}
+
+// lockRules serialises read-modify-write of the rules file, so two `rule`
+// commands at once cannot lose an update. It locks the directory, leaving no
+// lock file beside a rules file that may be committed.
+func lockRules(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	return state.LockDir(filepath.Dir(path), 2*time.Second)
 }
 
 func absPath(p string) string {

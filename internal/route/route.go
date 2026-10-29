@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/avinash-1707/domicile/internal/rules"
@@ -37,7 +38,7 @@ type Options struct {
 
 // Router routes connections by rule.
 type Router struct {
-	table  *rules.Table
+	table  atomic.Pointer[rules.Table]
 	exits  ExitDialer
 	direct net.Dialer
 	log    *slog.Logger
@@ -48,7 +49,8 @@ func New(table *rules.Table, exits ExitDialer, log *slog.Logger, opts Options) *
 	if log == nil {
 		log = slog.Default()
 	}
-	r := &Router{table: table, exits: exits, log: log}
+	r := &Router{exits: exits, log: log}
+	r.table.Store(table)
 	if opts.BlockLocalDirect {
 		// Control sees the resolved address right before connecting, so a
 		// hostname that resolves to a local address is caught too.
@@ -73,7 +75,7 @@ var errLocalDenied = errors.New("direct connection to a local or private address
 // name, Direct, or "direct (fallback from <exit>)". Destination failures are
 // *wire.OpenError on either path, so callers report them the same way.
 func (r *Router) Dial(ctx context.Context, dst wire.Open) (tunnel.Stream, string, error) {
-	rule, ok := r.table.Match(dst.Host)
+	rule, ok := r.table.Load().Match(dst.Host)
 	if !ok {
 		st, err := r.dialDirect(ctx, dst)
 		return st, Direct, err
@@ -87,6 +89,9 @@ func (r *Router) Dial(ctx context.Context, dst wire.Open) (tunnel.Stream, string
 	}
 	return st, rule.Via, err
 }
+
+// SetTable replaces the rules for new connections; open ones keep their path.
+func (r *Router) SetTable(t *rules.Table) { r.table.Store(t) }
 
 // dialDirect connects from the VPS. Failures are reported with the same
 // statuses an exit would use.
