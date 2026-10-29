@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -18,7 +19,9 @@ import (
 	"github.com/avinash-1707/domicile/internal/certs"
 	"github.com/avinash-1707/domicile/internal/exit"
 	"github.com/avinash-1707/domicile/internal/proxy"
+	"github.com/avinash-1707/domicile/internal/secret"
 	"github.com/avinash-1707/domicile/internal/server"
+	"github.com/avinash-1707/domicile/internal/state"
 	"github.com/avinash-1707/domicile/internal/tunnel"
 	"github.com/avinash-1707/domicile/internal/tunnel/quictun"
 	"github.com/avinash-1707/domicile/internal/wire"
@@ -57,14 +60,26 @@ func newEnv(t *testing.T, withExit bool) *env {
 	})
 
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := server.New(server.Config{Exits: map[string]string{"home": "exit-token"}, Logger: quiet})
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	err = state.Create(statePath, state.State{
+		Exits: map[string]state.Exit{"home": {CredentialSHA256: secret.Digest("exit-token")}},
+		Users: map[string]state.User{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := state.OpenLive(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := server.New(server.Config{Auth: live, Logger: quiet})
 	wg.Go(func() { srv.Serve(ctx, l) })
 
 	if withExit {
 		wg.Go(func() {
 			exit.Run(ctx, exit.Config{
-				Name:  "home",
-				Token: "exit-token",
+				Name:       "home",
+				Credential: "exit-token",
 				Dial: func(ctx context.Context) (tunnel.Session, error) {
 					return quictun.Dial(ctx, l.Addr().String(), certs.PinnedClientConfig(pin, tunnel.ALPN), quictun.Config{})
 				},
@@ -82,7 +97,7 @@ func newEnv(t *testing.T, withExit bool) *env {
 
 	logs := &syncBuffer{}
 	p, err := proxy.New(proxy.Config{
-		Users: map[string]string{proxyUser: proxyPass},
+		CheckUser: func(u, p string) bool { return u == proxyUser && secret.Equal(p, proxyPass) },
 		Dial: func(ctx context.Context, dst wire.Open) (tunnel.Stream, string, error) {
 			st, err := srv.Dial(ctx, "home", dst)
 			return st, "home", err

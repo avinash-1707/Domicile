@@ -9,17 +9,44 @@ import (
 )
 
 func TestHelloRoundTrip(t *testing.T) {
-	want := Hello{Name: "home", Token: strings.Repeat("t", 255)}
-	var buf bytes.Buffer
-	if err := WriteHello(&buf, want); err != nil {
-		t.Fatal(err)
+	for _, want := range []Hello{
+		{Kind: HelloAuth, Name: "home", Secret: strings.Repeat("t", 255)},
+		{Kind: HelloJoin, Name: "office", Secret: "one-time"},
+	} {
+		var buf bytes.Buffer
+		if err := WriteHello(&buf, want); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ReadHello(&buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("got %+v, want %+v", got, want)
+		}
 	}
-	got, err := ReadHello(&buf)
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestHelloReplyRoundTrip(t *testing.T) {
+	tests := []struct {
+		status   HelloStatus
+		cred     string
+		kind     HelloKind
+		wantCred string
+	}{
+		{HelloOK, "", HelloAuth, ""},
+		{HelloOK, "new-credential", HelloJoin, "new-credential"},
+		{HelloUnauthorized, "", HelloJoin, ""},
 	}
-	if got != want {
-		t.Fatalf("got %+v, want %+v", got, want)
+	for _, tt := range tests {
+		var buf bytes.Buffer
+		if err := WriteHelloReply(&buf, tt.status, tt.cred); err != nil {
+			t.Fatal(err)
+		}
+		s, cred, err := ReadHelloReply(&buf, tt.kind)
+		if err != nil || s != tt.status || cred != tt.wantCred {
+			t.Fatalf("got %v %q %v, want %v %q", s, cred, err, tt.status, tt.wantCred)
+		}
 	}
 }
 
@@ -74,8 +101,9 @@ func TestWriteRejectsInvalid(t *testing.T) {
 		{"empty host", func(w io.Writer) error { return WriteOpen(w, Open{Host: "", Port: 443}) }},
 		{"host too long", func(w io.Writer) error { return WriteOpen(w, Open{Host: strings.Repeat("a", 256), Port: 443}) }},
 		{"port zero", func(w io.Writer) error { return WriteOpen(w, Open{Host: "a", Port: 0}) }},
-		{"empty name", func(w io.Writer) error { return WriteHello(w, Hello{Name: "", Token: "t"}) }},
-		{"empty token", func(w io.Writer) error { return WriteHello(w, Hello{Name: "home", Token: ""}) }},
+		{"empty name", func(w io.Writer) error { return WriteHello(w, Hello{Kind: HelloAuth, Name: "", Secret: "t"}) }},
+		{"empty secret", func(w io.Writer) error { return WriteHello(w, Hello{Kind: HelloAuth, Name: "home", Secret: ""}) }},
+		{"unknown kind", func(w io.Writer) error { return WriteHello(w, Hello{Kind: 9, Name: "home", Secret: "t"}) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -97,14 +125,15 @@ func TestReadRejectsMalformed(t *testing.T) {
 		read    func(io.Reader) error
 		wantErr error
 	}{
-		{"open wrong version", []byte{2, 1, 'a', 0, 80}, readOpen, ErrVersion},
+		{"open wrong version", []byte{9, 1, 'a', 0, 80}, readOpen, ErrVersion},
 		{"open truncated host", []byte{Version, 5, 'a', 'b'}, readOpen, io.ErrUnexpectedEOF},
 		{"open missing port", []byte{Version, 1, 'a', 0}, readOpen, io.ErrUnexpectedEOF},
 		{"open empty host", []byte{Version, 0, 0, 80}, readOpen, nil},
 		{"open port zero", []byte{Version, 1, 'a', 0, 0}, readOpen, nil},
 		{"open empty input", nil, readOpen, io.EOF},
-		{"hello wrong version", []byte{9, 1, 'a', 1, 'b'}, readHello, ErrVersion},
-		{"hello truncated token", []byte{Version, 1, 'a', 3, 'b'}, readHello, io.ErrUnexpectedEOF},
+		{"hello wrong version", []byte{9, 1, 1, 'a', 1, 'b'}, readHello, ErrVersion},
+		{"hello unknown kind", []byte{Version, 7, 1, 'a', 1, 'b'}, readHello, nil},
+		{"hello truncated secret", []byte{Version, 1, 1, 'a', 3, 'b'}, readHello, io.ErrUnexpectedEOF},
 		{"reply empty", nil, ReadOpenReply, io.EOF},
 	}
 	for _, tt := range tests {

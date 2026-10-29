@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/avinash-1707/domicile/internal/secret"
 	"github.com/avinash-1707/domicile/internal/server"
 	"github.com/avinash-1707/domicile/internal/tunnel"
 	"github.com/avinash-1707/domicile/internal/wire"
@@ -41,9 +40,10 @@ type DialFunc func(ctx context.Context, dst wire.Open) (st tunnel.Stream, path s
 
 // Config configures a proxy Server.
 type Config struct {
-	// Users maps proxy usernames to passwords. It must not be empty.
-	Users map[string]string
-	Dial  DialFunc
+	// CheckUser reports whether user/pass may use the proxy. It is required:
+	// the proxy never runs without credentials.
+	CheckUser func(user, pass string) bool
+	Dial      DialFunc
 	// StallTimeout bounds how long a client that stopped reading can hold a
 	// connection. Defaults to tunnel.DefaultStallTimeout.
 	StallTimeout time.Duration
@@ -56,11 +56,11 @@ type Server struct {
 	log *slog.Logger
 }
 
-// New returns a Server. It returns an error if no users are configured, since
-// the proxy never runs without credentials.
+// New returns a Server. It returns an error without a credential check,
+// since the proxy never runs without credentials.
 func New(cfg Config) (*Server, error) {
-	if len(cfg.Users) == 0 {
-		return nil, errors.New("proxy: no users configured")
+	if cfg.CheckUser == nil {
+		return nil, errors.New("proxy: no credential check configured")
 	}
 	if cfg.Dial == nil {
 		return nil, errors.New("proxy: no dial function")
@@ -129,7 +129,7 @@ func (s *Server) handle(ctx context.Context, c *net.TCPConn) {
 	if first[0] == socksVersion {
 		proto, handshake = "socks5", socksHandshake
 	}
-	dst, err := handshake(br, c, s.checkUser)
+	dst, err := handshake(br, c, s.cfg.CheckUser)
 	if err != nil {
 		// Auth failures are logged without the attempted credentials.
 		s.log.Info("proxy handshake failed", "proto", proto, "err", err)
@@ -191,10 +191,6 @@ func (s *Server) handle(ctx context.Context, c *net.TCPConn) {
 	default:
 		s.log.Info("proxied", append(attrs, "result", "aborted", "err", pipeErr)...)
 	}
-}
-
-func (s *Server) checkUser(user, pass string) bool {
-	return secret.Check(s.cfg.Users, user, pass)
 }
 
 func (s *Server) reply(w io.Writer, proto string, o outcome) error {

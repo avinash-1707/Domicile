@@ -39,25 +39,38 @@ const (
 	rejectGrace = 2 * time.Second
 )
 
+// Authenticator knows which exits may connect. *state.Live satisfies it.
+type Authenticator interface {
+	// ExitCredential returns the digest (secret.Digest) of a paired exit's
+	// credential.
+	ExitCredential(name string) (digest string, ok bool)
+	// Join consumes a one-time token for name and returns the exit's new
+	// long-lived credential.
+	Join(name, token string) (credential string, err error)
+}
+
 // Config configures a Server.
 type Config struct {
-	// Exits maps each exit name to its token.
-	// SIMPLIFIED: plain tokens held in memory. Registration (one-time
-	// tokens, hashed long-lived credentials, revocation) replaces this.
-	Exits map[string]string
-
+	Auth   Authenticator
 	Logger *slog.Logger
+}
+
+// liveExit is a connected exit and the credential digest it proved, kept
+// so Revalidate can cut it off once that credential is revoked.
+type liveExit struct {
+	sess   tunnel.Session
+	digest string
 }
 
 // Server tracks connected exits.
 type Server struct {
-	exits map[string]string
-	log   *slog.Logger
+	auth Authenticator
+	log  *slog.Logger
 
 	pending chan struct{} // semaphore of size maxPendingHellos
 
 	mu        sync.Mutex
-	sessions  map[string]tunnel.Session
+	sessions  map[string]liveExit
 	pendingIP map[string]int
 	lastDrop  time.Time
 	dropped   int
@@ -71,10 +84,10 @@ func New(cfg Config) *Server {
 		log = slog.Default()
 	}
 	return &Server{
-		exits:     cfg.Exits,
+		auth:      cfg.Auth,
 		log:       log,
 		pending:   make(chan struct{}, maxPendingHellos),
-		sessions:  make(map[string]tunnel.Session),
+		sessions:  make(map[string]liveExit),
 		pendingIP: make(map[string]int),
 	}
 }
@@ -143,14 +156,14 @@ func (s *Server) Dial(ctx context.Context, exit string, dst wire.Open) (tunnel.S
 }
 
 func (s *Server) admit(ctx context.Context, sess tunnel.Session, ip string) {
-	name, err := s.authenticate(ctx, sess)
+	name, digest, err := s.authenticate(ctx, sess)
 	s.releasePending(ip)
 	if err != nil {
-		s.log.Warn("exit rejected", "err", err)
+		s.log.Warn("exit rejected", "remote", ip, "err", err)
 		sess.Close()
 		return
 	}
-	if !s.register(name, sess) {
+	if !s.register(name, sess, digest) {
 		sess.Close()
 		return
 	}
@@ -162,12 +175,14 @@ func (s *Server) admit(ctx context.Context, sess tunnel.Session, ip string) {
 	}
 }
 
-func (s *Server) authenticate(ctx context.Context, sess tunnel.Session) (string, error) {
+// authenticate reads the exit's Hello and returns its name and the digest of
+// the credential it proved (or was just issued, for a join).
+func (s *Server) authenticate(ctx context.Context, sess tunnel.Session) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, helloTimeout)
 	defer cancel()
 	st, err := sess.AcceptStream(ctx)
 	if err != nil {
-		return "", fmt.Errorf("no hello stream: %w", err)
+		return "", "", fmt.Errorf("no hello stream: %w", err)
 	}
 	defer st.Close()
 	stop := context.AfterFunc(ctx, func() { st.Close() })
@@ -176,27 +191,60 @@ func (s *Server) authenticate(ctx context.Context, sess tunnel.Session) (string,
 	h, err := wire.ReadHello(st)
 	if errors.Is(err, wire.ErrVersion) {
 		reject(st, sess, wire.HelloUnsupportedVersion)
-		return "", fmt.Errorf("read hello: %w", err)
+		return "", "", fmt.Errorf("read hello: %w", err)
 	}
 	if err != nil {
-		return "", fmt.Errorf("read hello: %w", err)
+		return "", "", fmt.Errorf("read hello: %w", err)
 	}
-	if !s.validToken(h) {
-		reject(st, sess, wire.HelloUnauthorized)
-		return "", fmt.Errorf("%w %q", errUnauthorized, h.Name)
+
+	var digest, issued string
+	switch h.Kind {
+	case wire.HelloJoin:
+		cred, err := s.auth.Join(h.Name, h.Secret)
+		if err != nil {
+			reject(st, sess, wire.HelloUnauthorized)
+			return "", "", fmt.Errorf("join as %q: %w", h.Name, err)
+		}
+		issued, digest = cred, secret.Digest(cred)
+		s.log.Info("exit paired", "exit", h.Name)
+	default:
+		want, ok := s.auth.ExitCredential(h.Name)
+		// Checked even for unknown names so timing does not reveal them.
+		if !secret.MatchesDigest(h.Secret, want) || !ok {
+			reject(st, sess, wire.HelloUnauthorized)
+			return "", "", fmt.Errorf("%w %q", errUnauthorized, h.Name)
+		}
+		digest = want
 	}
-	if err := wire.WriteHelloReply(st, wire.HelloOK); err != nil {
-		return "", fmt.Errorf("write hello reply: %w", err)
+	if err := wire.WriteHelloReply(st, wire.HelloOK, issued); err != nil {
+		return "", "", fmt.Errorf("write hello reply: %w", err)
 	}
 	if err := st.CloseWrite(); err != nil {
-		return "", fmt.Errorf("finish hello: %w", err)
+		return "", "", fmt.Errorf("finish hello: %w", err)
 	}
-	return h.Name, nil
+	return h.Name, digest, nil
+}
+
+// Revalidate closes every session whose credential is no longer current:
+// the exit was removed, or re-paired with a new credential. Call it after
+// the credentials change.
+func (s *Server) Revalidate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name, le := range s.sessions {
+		cur, ok := s.auth.ExitCredential(name)
+		if ok && cur == le.digest {
+			continue
+		}
+		s.log.Warn("exit credential revoked, disconnecting", "exit", name)
+		le.sess.Close()
+		delete(s.sessions, name)
+	}
 }
 
 // reject sends a final status and waits briefly for the exit to read it.
 func reject(st tunnel.Stream, sess tunnel.Session, status wire.HelloStatus) {
-	if err := wire.WriteHelloReply(st, status); err != nil {
+	if err := wire.WriteHelloReply(st, status, ""); err != nil {
 		return
 	}
 	_ = st.CloseWrite()
@@ -204,10 +252,6 @@ func reject(st tunnel.Stream, sess tunnel.Session, status wire.HelloStatus) {
 	case <-sess.Done():
 	case <-time.After(rejectGrace):
 	}
-}
-
-func (s *Server) validToken(h wire.Hello) bool {
-	return secret.Check(s.exits, h.Name, h.Token)
 }
 
 // reservePending takes a global and a per-IP pending slot, or neither.
@@ -259,17 +303,24 @@ func hostOf(addr net.Addr) string {
 
 // register records sess as exit's session. A newer session replaces an older
 // one: the exit reconnected before the server noticed the old one died.
-func (s *Server) register(name string, sess tunnel.Session) bool {
+func (s *Server) register(name string, sess tunnel.Session, digest string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return false
 	}
+	// Re-check under the lock Revalidate takes: a credential revoked after
+	// authenticate checked it, but before this point, would otherwise slip
+	// past Revalidate and stay connected.
+	if cur, ok := s.auth.ExitCredential(name); !ok || cur != digest {
+		s.log.Warn("exit credential revoked during handshake, refusing", "exit", name)
+		return false
+	}
 	if old, ok := s.sessions[name]; ok {
 		s.log.Info("exit reconnected, replacing old session", "exit", name)
-		old.Close()
+		old.sess.Close()
 	}
-	s.sessions[name] = sess
+	s.sessions[name] = liveExit{sess: sess, digest: digest}
 	return true
 }
 
@@ -277,7 +328,7 @@ func (s *Server) register(name string, sess tunnel.Session) bool {
 func (s *Server) unregister(name string, sess tunnel.Session) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.sessions[name] != sess {
+	if s.sessions[name].sess != sess {
 		return false
 	}
 	delete(s.sessions, name)
@@ -287,15 +338,15 @@ func (s *Server) unregister(name string, sess tunnel.Session) bool {
 func (s *Server) session(name string) tunnel.Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.sessions[name]
+	return s.sessions[name].sess
 }
 
 func (s *Server) closeAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
-	for name, sess := range s.sessions {
-		sess.Close()
+	for name, le := range s.sessions {
+		le.sess.Close()
 		delete(s.sessions, name)
 	}
 }

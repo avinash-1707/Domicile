@@ -17,9 +17,14 @@ import (
 	"github.com/avinash-1707/domicile/internal/wire"
 )
 
-// ErrUnauthorized means the server rejected the exit's credentials. Retrying
+// ErrUnauthorized means the server rejected the exit's credential: it was
+// revoked with `domicile remove`, or replaced by a newer pairing. Retrying
 // cannot help, so Run returns it instead of reconnecting.
 var ErrUnauthorized = errors.New("server rejected exit credentials")
+
+// ErrJoinRejected means the server refused a join token: wrong, expired or
+// already used.
+var ErrJoinRejected = errors.New("server rejected the join code (wrong, expired or already used); run `domicile add` again for a new one")
 
 const (
 	defaultDestinationTimeout = 10 * time.Second
@@ -35,8 +40,8 @@ type Dialer interface {
 
 // Config configures an exit.
 type Config struct {
-	Name  string
-	Token string
+	Name       string
+	Credential string
 
 	// Dial opens a new session to the server.
 	Dial func(ctx context.Context) (tunnel.Session, error)
@@ -98,7 +103,7 @@ func runSession(ctx context.Context, cfg Config, log *slog.Logger) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	if err := hello(ctx, sess, cfg); err != nil {
+	if _, err := hello(ctx, sess, wire.Hello{Kind: wire.HelloAuth, Name: cfg.Name, Secret: cfg.Credential}); err != nil {
 		return err
 	}
 	log.Info("connected to server")
@@ -112,33 +117,50 @@ func runSession(ctx context.Context, cfg Config, log *slog.Logger) error {
 	}
 }
 
-func hello(ctx context.Context, sess tunnel.Session, cfg Config) error {
+// Join pairs a new exit: it presents the one-time token from `domicile add`
+// on a fresh session and returns the long-lived credential the server
+// issues. The session is closed afterwards; Run then connects normally.
+func Join(ctx context.Context, dial func(context.Context) (tunnel.Session, error), name, token string) (string, error) {
+	sess, err := dial(ctx)
+	if err != nil {
+		return "", fmt.Errorf("connect to server: %w", err)
+	}
+	defer sess.Close()
+	cred, err := hello(ctx, sess, wire.Hello{Kind: wire.HelloJoin, Name: name, Secret: token})
+	if errors.Is(err, ErrUnauthorized) {
+		return "", ErrJoinRejected
+	}
+	return cred, err
+}
+
+// hello sends h and returns the credential a successful join carries.
+func hello(ctx context.Context, sess tunnel.Session, h wire.Hello) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, helloTimeout)
 	defer cancel()
 	st, err := sess.OpenStream(ctx)
 	if err != nil {
-		return fmt.Errorf("open hello stream: %w", err)
+		return "", fmt.Errorf("open hello stream: %w", err)
 	}
 	defer st.Close()
 	stop := context.AfterFunc(ctx, func() { st.Close() })
 	defer stop()
 
-	if err := wire.WriteHello(st, wire.Hello{Name: cfg.Name, Token: cfg.Token}); err != nil {
-		return fmt.Errorf("send hello: %w", err)
+	if err := wire.WriteHello(st, h); err != nil {
+		return "", fmt.Errorf("send hello: %w", err)
 	}
-	status, err := wire.ReadHelloReply(st)
+	status, cred, err := wire.ReadHelloReply(st, h.Kind)
 	if err != nil {
-		return fmt.Errorf("read hello reply: %w", err)
+		return "", fmt.Errorf("read hello reply: %w", err)
 	}
 	switch status {
 	case wire.HelloOK:
-		return nil
+		return cred, nil
 	case wire.HelloUnauthorized:
-		return ErrUnauthorized
+		return "", ErrUnauthorized
 	case wire.HelloUnsupportedVersion:
-		return fmt.Errorf("server rejected frame version %d: %w", wire.Version, wire.ErrVersion)
+		return "", fmt.Errorf("server rejected frame version %d: %w", wire.Version, wire.ErrVersion)
 	default:
-		return fmt.Errorf("hello rejected: %s", status)
+		return "", fmt.Errorf("hello rejected: %s", status)
 	}
 }
 

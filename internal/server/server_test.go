@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -17,7 +18,9 @@ import (
 
 	"github.com/avinash-1707/domicile/internal/certs"
 	"github.com/avinash-1707/domicile/internal/exit"
+	"github.com/avinash-1707/domicile/internal/secret"
 	"github.com/avinash-1707/domicile/internal/server"
+	"github.com/avinash-1707/domicile/internal/state"
 	"github.com/avinash-1707/domicile/internal/tunnel"
 	"github.com/avinash-1707/domicile/internal/tunnel/quictun"
 	"github.com/avinash-1707/domicile/internal/wire"
@@ -27,14 +30,18 @@ import (
 var testQUIC = quictun.Config{KeepAlivePeriod: 100 * time.Millisecond, MaxIdleTimeout: 600 * time.Millisecond}
 
 type harness struct {
-	t     *testing.T
-	cert  tls.Certificate
-	pin   certs.Fingerprint
-	exits map[string]string
-	srv   *server.Server
-	addr  string
-	stop  func()
+	t         *testing.T
+	cert      tls.Certificate
+	pin       certs.Fingerprint
+	statePath string
+	live      *state.Live
+	srv       *server.Server
+	addr      string
+	stop      func()
 }
+
+// The exit "home" is paired with this credential in every harness.
+const homeCredential = "secret-token"
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
@@ -46,9 +53,44 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, cert: cert, pin: pin, exits: map[string]string{"home": "secret-token"}}
+	h := &harness{t: t, cert: cert, pin: pin, statePath: filepath.Join(t.TempDir(), "state.json")}
+	err = state.Create(h.statePath, state.State{
+		Exits: map[string]state.Exit{"home": {CredentialSHA256: secret.Digest(homeCredential)}},
+		Users: map[string]state.User{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.live, err = state.OpenLive(h.statePath); err != nil {
+		t.Fatal(err)
+	}
 	h.start("127.0.0.1:0")
 	return h
+}
+
+// issueToken stores a one-time join token for exit, as `domicile add` does.
+func (h *harness) issueToken(exit string, ttl time.Duration) string {
+	h.t.Helper()
+	tok, err := state.NewSecret()
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	err = state.Update(h.statePath, func(st *state.State) error {
+		e := st.Exits[exit]
+		e.Join = &state.JoinToken{SHA256: secret.Digest(tok), Expires: time.Now().Add(ttl)}
+		st.Exits[exit] = e
+		return nil
+	})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return tok
+}
+
+func (h *harness) dialer(addr string) func(context.Context) (tunnel.Session, error) {
+	return func(ctx context.Context) (tunnel.Session, error) {
+		return quictun.Dial(ctx, addr, certs.PinnedClientConfig(h.pin, tunnel.ALPN), testQUIC)
+	}
 }
 
 // start runs a server on addr; restarting on the same addr simulates a
@@ -62,7 +104,7 @@ func (h *harness) start(addr string) {
 		h.t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	srv := server.New(server.Config{Exits: h.exits, Logger: quietLogger()})
+	srv := server.New(server.Config{Auth: h.live, Logger: quietLogger()})
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
@@ -91,12 +133,10 @@ func (h *harness) runExit(serverAddr, token string) <-chan error {
 	go func() {
 		defer close(finished)
 		done <- exit.Run(ctx, exit.Config{
-			Name:  "home",
-			Token: token,
-			Dial: func(ctx context.Context) (tunnel.Session, error) {
-				return quictun.Dial(ctx, serverAddr, certs.PinnedClientConfig(h.pin, tunnel.ALPN), testQUIC)
-			},
-			Logger: quietLogger(),
+			Name:       "home",
+			Credential: token,
+			Dial:       h.dialer(serverAddr),
+			Logger:     quietLogger(),
 		})
 	}()
 	h.t.Cleanup(func() {
@@ -118,9 +158,121 @@ func (h *harness) waitConnected(want bool, within time.Duration) {
 	h.t.Fatalf("exit connected = %v after %v, want %v", !want, within, want)
 }
 
+func TestJoinThenConnect(t *testing.T) {
+	h := newHarness(t)
+	tok := h.issueToken("office", time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cred, err := exit.Join(ctx, h.dialer(h.addr), "office", tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exit.Join(ctx, h.dialer(h.addr), "office", tok); !errors.Is(err, exit.ErrJoinRejected) {
+		t.Fatalf("second join with the same token = %v, want rejected", err)
+	}
+
+	done := make(chan error, 1)
+	rctx, stop := context.WithCancel(context.Background())
+	defer func() { stop(); <-done }()
+	go func() {
+		done <- exit.Run(rctx, exit.Config{Name: "office", Credential: cred, Dial: h.dialer(h.addr), Logger: quietLogger()})
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for !h.srv.Connected("office") {
+		if time.Now().After(deadline) {
+			t.Fatal("joined exit did not connect with its new credential")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestExpiredTokenRejected(t *testing.T) {
+	h := newHarness(t)
+	tok := h.issueToken("office", -time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := exit.Join(ctx, h.dialer(h.addr), "office", tok); !errors.Is(err, exit.ErrJoinRejected) {
+		t.Fatalf("expired token = %v, want rejected", err)
+	}
+}
+
+func TestRemovedExitIsCutOffAndCannotReconnect(t *testing.T) {
+	h := newHarness(t)
+	done := h.runExit(h.addr, homeCredential)
+	h.waitConnected(true, 5*time.Second)
+
+	// `domicile remove home`, then the server's state watcher.
+	if err := state.Update(h.statePath, func(st *state.State) error { delete(st.Exits, "home"); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.live.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	h.srv.Revalidate()
+	h.waitConnected(false, time.Second)
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, exit.ErrUnauthorized) {
+			t.Fatalf("removed exit's Run = %v, want ErrUnauthorized", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("removed exit kept retrying")
+	}
+}
+
+// revokingAuth accepts one credential check, then reports the exit as
+// removed: a `domicile remove` landing between authenticate and register.
+type revokingAuth struct {
+	digest string
+	calls  atomic.Int32
+}
+
+func (a *revokingAuth) ExitCredential(string) (string, bool) {
+	if a.calls.Add(1) == 1 {
+		return a.digest, true
+	}
+	return "", false
+}
+
+func (a *revokingAuth) Join(string, string) (string, error) { return "", errors.New("no joins") }
+
+func TestRevokedDuringHandshakeIsNotRegistered(t *testing.T) {
+	cert, _ := certs.SelfSigned("domicile")
+	pin, _ := certs.FingerprintOf(cert)
+	cfg := testQUIC
+	cfg.MaxIncomingStreams = 1
+	l, err := quictun.Listen("127.0.0.1:0", certs.ServerConfig(cert, tunnel.ALPN), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	srv := server.New(server.Config{Auth: &revokingAuth{digest: secret.Digest(homeCredential)}, Logger: quietLogger()})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.Serve(ctx, l)
+
+	done := make(chan error, 1)
+	rctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go func() {
+		done <- exit.Run(rctx, exit.Config{
+			Name: "home", Credential: homeCredential, Logger: quietLogger(),
+			Dial: func(ctx context.Context) (tunnel.Session, error) {
+				return quictun.Dial(ctx, l.Addr().String(), certs.PinnedClientConfig(pin, tunnel.ALPN), testQUIC)
+			},
+		})
+	}()
+	time.Sleep(500 * time.Millisecond)
+	if srv.Connected("home") {
+		t.Fatal("a session whose credential was revoked mid-handshake was registered")
+	}
+}
+
 func TestEchoThroughExit(t *testing.T) {
 	h := newHarness(t)
-	h.runExit(h.addr, "secret-token")
+	h.runExit(h.addr, homeCredential)
 	h.waitConnected(true, 5*time.Second)
 
 	st := h.dial(echoServer(t))
@@ -161,7 +313,7 @@ func TestWrongTokenIsFinal(t *testing.T) {
 
 func TestWrongTokenLeavesLiveExitAlone(t *testing.T) {
 	h := newHarness(t)
-	h.runExit(h.addr, "secret-token")
+	h.runExit(h.addr, homeCredential)
 	h.waitConnected(true, 5*time.Second)
 
 	select {
@@ -194,10 +346,10 @@ func TestUnsupportedVersionGetsFinalReply(t *testing.T) {
 	}
 	defer st.Close()
 	// A Hello from a future exit: version 2, otherwise well formed.
-	if _, err := st.Write([]byte{wire.Version + 1, 4, 'h', 'o', 'm', 'e', 1, 'x'}); err != nil {
+	if _, err := st.Write([]byte{wire.Version + 1, byte(wire.HelloAuth), 4, 'h', 'o', 'm', 'e', 1, 'x'}); err != nil {
 		t.Fatal(err)
 	}
-	status, err := wire.ReadHelloReply(st)
+	status, _, err := wire.ReadHelloReply(st, wire.HelloAuth)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +392,7 @@ func TestPendingSessionsLimitedPerIP(t *testing.T) {
 
 func TestDialReportsDestinationFailure(t *testing.T) {
 	h := newHarness(t)
-	h.runExit(h.addr, "secret-token")
+	h.runExit(h.addr, homeCredential)
 	h.waitConnected(true, 5*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -268,7 +420,7 @@ func TestDialUnknownExit(t *testing.T) {
 func TestServerNoticesSilentExitLoss(t *testing.T) {
 	h := newHarness(t)
 	relay := newUDPRelay(t, h.addr)
-	h.runExit(relay.addr(), "secret-token")
+	h.runExit(relay.addr(), homeCredential)
 	h.waitConnected(true, 5*time.Second)
 
 	// The home link goes dark without any close message (power cut, Wi-Fi drop).
@@ -278,7 +430,7 @@ func TestServerNoticesSilentExitLoss(t *testing.T) {
 
 func TestExitReconnectsAfterServerRestart(t *testing.T) {
 	h := newHarness(t)
-	h.runExit(h.addr, "secret-token")
+	h.runExit(h.addr, homeCredential)
 	h.waitConnected(true, 5*time.Second)
 
 	addr := h.addr
