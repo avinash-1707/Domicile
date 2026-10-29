@@ -154,7 +154,7 @@ func serveStream(ctx context.Context, st tunnel.Stream, cfg Config, log *slog.Lo
 	dctx, cancel := context.WithTimeout(ctx, cfg.DestinationTimeout)
 	conn, err := cfg.Dialer.DialContext(dctx, "tcp", dst)
 	cancel()
-	status := classify(err)
+	status := wire.DialStatus(err)
 	if err == nil {
 		if _, ok := conn.(tunnel.HalfCloser); !ok {
 			conn.Close()
