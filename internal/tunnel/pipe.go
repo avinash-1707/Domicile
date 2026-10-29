@@ -90,8 +90,8 @@ func Pipe(ctx context.Context, st Stream, c HalfCloser, stallTimeout time.Durati
 		res    copyResult
 	}
 	results := make(chan half, 2)
-	go func() { results <- half{true, copyHalf(stallWriter{c, stallTimeout}, st, c.CloseWrite)} }()
-	go func() { results <- half{false, copyHalf(st, c, st.CloseWrite)} }()
+	go func() { results <- half{toConn: true, res: copyHalf(stallWriter{c, stallTimeout}, st, c.CloseWrite)} }()
+	go func() { results <- half{toConn: false, res: copyHalf(st, c, st.CloseWrite)} }()
 
 	var first *PipeError
 	var clean [2]bool // indexed by toConn
@@ -195,17 +195,17 @@ func copyHalf(dst io.Writer, src io.Reader, closeWrite func() error) copyResult 
 		n, rerr := src.Read(buf[:])
 		if n > 0 {
 			if _, werr := dst.Write(buf[:n]); werr != nil {
-				return copyResult{werr, true}
+				return copyResult{err: werr, write: true}
 			}
 		}
 		if rerr == io.EOF {
 			if err := closeWrite(); err != nil {
-				return copyResult{err, true}
+				return copyResult{err: err, write: true}
 			}
 			return copyResult{}
 		}
 		if rerr != nil {
-			return copyResult{rerr, false}
+			return copyResult{err: rerr, write: false}
 		}
 	}
 }

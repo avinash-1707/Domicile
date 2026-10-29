@@ -142,7 +142,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 		}
 		var req request
 		if err := json.Unmarshal(line, &req); err != nil {
-			send(response{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{codeParse, "parse error"}})
+			send(response{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{Code: codeParse, Message: "parse error"}})
 			continue
 		}
 		if len(req.ID) == 0 {
@@ -187,11 +187,11 @@ func (s *Server) dispatch(ctx context.Context, req request, tools []Tool) (any, 
 			Arguments json.RawMessage `json:"arguments"`
 		}
 		if err := json.Unmarshal(req.Params, &p); err != nil {
-			return nil, &rpcError{codeInvalidParams, "invalid params"}
+			return nil, &rpcError{Code: codeInvalidParams, Message: "invalid params"}
 		}
 		h := s.Handlers[p.Name]
 		if h == nil {
-			return nil, &rpcError{codeInvalidParams, "unknown tool " + p.Name}
+			return nil, &rpcError{Code: codeInvalidParams, Message: "unknown tool " + p.Name}
 		}
 		if len(p.Arguments) == 0 {
 			p.Arguments = json.RawMessage("{}")
@@ -207,7 +207,7 @@ func (s *Server) dispatch(ctx context.Context, req request, tools []Tool) (any, 
 		}
 		return toolResult(string(text), false), nil
 	default:
-		return nil, &rpcError{codeMethodNotFound, "method not found: " + req.Method}
+		return nil, &rpcError{Code: codeMethodNotFound, Message: "method not found: " + req.Method}
 	}
 }
 

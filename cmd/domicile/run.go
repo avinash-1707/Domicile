@@ -204,7 +204,7 @@ func runMCP(ctx context.Context, args []string, in io.Reader, out io.Writer) err
 			}
 			out := make([]entry, 0, len(list))
 			for _, b := range list {
-				out = append(out, entry{b.Host, b.Count, b.Last, b.Suggest})
+				out = append(out, entry{Host: b.Host, Count: b.Count, Last: b.Last, Suggest: b.Suggest})
 			}
 			return out, nil
 		},

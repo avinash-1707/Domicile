@@ -265,30 +265,30 @@ type outcome struct {
 // path.
 func outcomeOf(err error) outcome {
 	if err == nil {
-		return outcome{socksSucceeded, http.StatusOK, "ok"}
+		return outcome{socks: socksSucceeded, http: http.StatusOK, reason: "ok"}
 	}
 	if errors.Is(err, server.ErrExitDown) {
-		return outcome{socksNetworkUnreachable, http.StatusBadGateway, "exit_down"}
+		return outcome{socks: socksNetworkUnreachable, http: http.StatusBadGateway, reason: "exit_down"}
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return outcome{socksTTLExpired, http.StatusGatewayTimeout, "timeout"}
+		return outcome{socks: socksTTLExpired, http: http.StatusGatewayTimeout, reason: "timeout"}
 	}
 	var oe *wire.OpenError
 	if errors.As(err, &oe) {
 		switch oe.Status {
 		case wire.OpenDNSFail:
-			return outcome{socksHostUnreachable, http.StatusBadGateway, oe.Status.String()}
+			return outcome{socks: socksHostUnreachable, http: http.StatusBadGateway, reason: oe.Status.String()}
 		case wire.OpenDenied:
-			return outcome{socksNotAllowed, http.StatusForbidden, oe.Status.String()}
+			return outcome{socks: socksNotAllowed, http: http.StatusForbidden, reason: oe.Status.String()}
 		case wire.OpenRefused:
-			return outcome{socksConnRefused, http.StatusBadGateway, oe.Status.String()}
+			return outcome{socks: socksConnRefused, http: http.StatusBadGateway, reason: oe.Status.String()}
 		case wire.OpenTimeout:
-			return outcome{socksTTLExpired, http.StatusGatewayTimeout, oe.Status.String()}
+			return outcome{socks: socksTTLExpired, http: http.StatusGatewayTimeout, reason: oe.Status.String()}
 		case wire.OpenUnreachable:
-			return outcome{socksHostUnreachable, http.StatusBadGateway, oe.Status.String()}
+			return outcome{socks: socksHostUnreachable, http: http.StatusBadGateway, reason: oe.Status.String()}
 		}
 	}
-	return outcome{socksGeneralFailure, http.StatusBadGateway, "tunnel_error"}
+	return outcome{socks: socksGeneralFailure, http: http.StatusBadGateway, reason: "tunnel_error"}
 }
 
 // handshakeLimit caps bytes read until lift is called.

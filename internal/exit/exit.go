@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/avinash-1707/domicile/internal/tunnel"
@@ -101,6 +102,10 @@ func runSession(ctx context.Context, cfg Config, dialer *net.Dialer, local *loca
 	if err != nil {
 		return fmt.Errorf("connect to server: %w", err)
 	}
+	// Deferred first so it runs last: the session is closed and ctx
+	// cancelled before waiting, which ends every stream.
+	var streams sync.WaitGroup
+	defer streams.Wait()
 	defer sess.Close()
 	// Streams live no longer than their session, so a lost tunnel always
 	// releases the destination connections it was carrying.
@@ -123,7 +128,7 @@ func runSession(ctx context.Context, cfg Config, dialer *net.Dialer, local *loca
 		if err != nil {
 			return fmt.Errorf("session ended: %w", err)
 		}
-		go serveStream(ctx, st, cfg, dialer, log)
+		streams.Go(func() { serveStream(ctx, st, cfg, dialer, log) })
 	}
 }
 
@@ -196,8 +201,10 @@ func serveStream(ctx context.Context, st tunnel.Stream, cfg Config, dialer *net.
 	if errors.Is(err, errDenied) {
 		status = wire.OpenDenied
 	}
+	var hc tunnel.HalfCloser
 	if err == nil {
-		if _, ok := conn.(tunnel.HalfCloser); !ok {
+		var ok bool
+		if hc, ok = conn.(tunnel.HalfCloser); !ok {
 			conn.Close()
 			log.Error("dialer returned a connection without CloseWrite", "type", fmt.Sprintf("%T", conn))
 			status = wire.OpenUnreachable
@@ -219,7 +226,7 @@ func serveStream(ctx context.Context, st tunnel.Stream, cfg Config, dialer *net.
 		st.Close()
 		return
 	}
-	if err := tunnel.Pipe(ctx, st, conn.(tunnel.HalfCloser), tunnel.DefaultStallTimeout); err != nil {
+	if err := tunnel.Pipe(ctx, st, hc, tunnel.DefaultStallTimeout); err != nil {
 		log.Debug("stream ended with error", "host", open.Host, "err", err)
 	}
 }
