@@ -201,6 +201,9 @@ func runUser(args []string, out io.Writer) error {
 		if strings.Contains(name, ":") {
 			return errors.New("user names must not contain ':' (HTTP proxy auth splits on it)")
 		}
+		if reservedUsers[name] {
+			return fmt.Errorf("%q is reserved for `domicile connect`/`run`; pick another name", name)
+		}
 		password, err := state.NewSecret()
 		if err != nil {
 			return err

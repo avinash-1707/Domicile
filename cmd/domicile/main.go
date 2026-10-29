@@ -25,6 +25,10 @@ Usage:
   domicile server [flags]                   run the VPS side
   domicile status [-json]                   show exits, connections and active rules
   domicile verify [-exit name] [-json]      check what sites see through each exit
+  domicile connect playwright-mcp|agent-browser|shell [-undo]
+                                            point a tool at the proxy
+  domicile run -- <command>                 run a command with the proxy in its environment
+  domicile mcp                              read-only tools for AI agents, over stdio
   domicile rule add <domain> -via <exit> [flags]
   domicile rule remove <domain> [-exact]
   domicile rule list
@@ -56,6 +60,12 @@ func main() {
 		err = runAgent(ctx, args, log)
 	case "rule":
 		err = runRule(args, os.Stdout)
+	case "connect":
+		err = runConnect(args, os.Stdout)
+	case "run":
+		err = runRun(ctx, args, os.Stdout)
+	case "mcp":
+		err = runMCP(ctx, args, os.Stdin, os.Stdout)
 	case "status":
 		err = runStatus(ctx, args, os.Stdout)
 	case "verify":
@@ -84,6 +94,10 @@ func main() {
 	}
 	if errors.Is(err, errChecksFailed) {
 		os.Exit(1)
+	}
+	var code exitCode
+	if errors.As(err, &code) {
+		os.Exit(int(code))
 	}
 	var vf verifyFailed
 	if errors.As(err, &vf) {

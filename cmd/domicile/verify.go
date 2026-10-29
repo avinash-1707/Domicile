@@ -7,11 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/avinash-1707/domicile/internal/control"
 	"github.com/avinash-1707/domicile/internal/verify"
@@ -58,40 +57,12 @@ func verifyCmd(ctx context.Context, args []string, out io.Writer, jsonOut *bool)
 
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	st, err := cl.Status(ctx)
+	reports, err := checkExits(ctx, cl, *only)
 	if err != nil {
 		return err
 	}
-	exits := st.Exits
-	if *only != "" {
-		exits = filterExit(exits, *only)
-		if len(exits) == 0 {
-			return fmt.Errorf("no exit named %q", *only)
-		}
-	}
-	if len(exits) == 0 {
+	if len(reports) == 0 {
 		return errors.New("no exits configured; add one with `domicile add`")
-	}
-
-	direct := func(ctx context.Context, host string, port uint16) (net.Conn, error) {
-		var d net.Dialer
-		return d.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(int(port))))
-	}
-	// Measured once: every exit is compared with the same VPS baseline, and
-	// ip-api's rate limit is not spent repeating it.
-	base := verify.Measure(ctx, direct, verify.Config{})
-	var reports []verify.Report
-	for _, e := range exits {
-		if !e.Connected {
-			reports = append(reports, verify.Report{Exit: e.Name, Checks: []verify.Check{{
-				Name: "exit", Result: verify.Fail, Detail: notConnected(e),
-			}}})
-			continue
-		}
-		via := func(ctx context.Context, host string, port uint16) (net.Conn, error) {
-			return cl.DialExit(ctx, e.Name, host, port)
-		}
-		reports = append(reports, verify.Run(ctx, e.Name, via, base, verify.Config{}))
 	}
 
 	if *asJSON {
@@ -150,7 +121,9 @@ func printReports(out io.Writer, reports []verify.Report) {
 // terminal (turn "FAIL" into "PASS"). JSON output escapes them already.
 func printable(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+		// Also drops format characters (bidi overrides, zero-width) and
+		// line/paragraph separators, which can disguise text.
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || unicode.Is(unicode.Cf, r) || r == 0x2028 || r == 0x2029 {
 			return -1
 		}
 		return r

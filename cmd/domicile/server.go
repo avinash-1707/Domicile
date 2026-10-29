@@ -144,7 +144,8 @@ func runServer(ctx context.Context, args []string, log *slog.Logger) error {
 	if cl != nil {
 		loops++
 		h := controlHandler{
-			srv: srv, live: live, rules: lr, started: time.Now(),
+			blocked: &blockedHosts{hosts: map[string]*control.Blocked{}},
+			srv:     srv, live: live, rules: lr, started: time.Now(),
 			tunnelAddr: l.Addr().String(), proxyAddr: pl.Addr().String(), fingerprint: pin.String(),
 		}
 		go func() { errc <- control.Serve(ctx, cl, h, log) }()
@@ -164,8 +165,19 @@ func isLoopback(a net.Addr) bool {
 	return ok && ta.IP.IsLoopback()
 }
 
+// maxBlocked bounds the reported-hosts list kept in memory.
+const maxBlocked = 100
+
+// blockedHosts holds sites agents reported as blocking the datacenter IP.
+// It is in memory only: a suggestion list for the operator, never routing.
+type blockedHosts struct {
+	mu    sync.Mutex
+	hosts map[string]*control.Blocked
+}
+
 // controlHandler answers the control socket from the live server.
 type controlHandler struct {
+	blocked     *blockedHosts
 	srv         *server.Server
 	live        *state.Live
 	rules       *liveRules
@@ -201,6 +213,64 @@ func (h controlHandler) Status() control.Status {
 
 func (h controlHandler) DialExit(ctx context.Context, exit string, dst wire.Open) (tunnel.Stream, error) {
 	return h.srv.Dial(ctx, exit, dst)
+}
+
+func (h controlHandler) ReportBlocked(host, reason string) error {
+	d, err := rules.NormalizeDomain(host)
+	if err != nil {
+		return err
+	}
+	if r := []rune(reason); len(r) > maxReason {
+		reason = string(r[:maxReason])
+	}
+	h.blocked.mu.Lock()
+	defer h.blocked.mu.Unlock()
+	b, ok := h.blocked.hosts[d]
+	if !ok {
+		if len(h.blocked.hosts) >= maxBlocked {
+			// Evict the stalest, so a flood of reports cannot block new ones.
+			var oldest string
+			for host, e := range h.blocked.hosts {
+				if oldest == "" || e.Last.Before(h.blocked.hosts[oldest].Last) {
+					oldest = host
+				}
+			}
+			delete(h.blocked.hosts, oldest)
+		}
+		b = &control.Blocked{Host: d}
+		h.blocked.hosts[d] = b
+	}
+	b.Count++
+	b.Last = time.Now()
+	b.Reason = printable(reason)
+	return nil
+}
+
+func (h controlHandler) Blocked() []control.Blocked {
+	// Suggest the first connected exit; the operator decides.
+	via := "<exit>"
+	for _, e := range h.Status().Exits {
+		if e.Connected {
+			via = e.Name
+			break
+		}
+	}
+	conf, _ := h.rules.snapshot()
+	table := rules.NewTable(conf)
+	h.blocked.mu.Lock()
+	defer h.blocked.mu.Unlock()
+	out := make([]control.Blocked, 0, len(h.blocked.hosts))
+	for _, b := range h.blocked.hosts {
+		c := *b
+		if r, ok := table.Match(c.Host); ok {
+			c.Suggest = fmt.Sprintf("already routed via %s by the rule for %s", r.Via, r.Match)
+		} else {
+			c.Suggest = fmt.Sprintf("domicile rule add %s -via %s", c.Host, via)
+		}
+		out = append(out, c)
+	}
+	slices.SortFunc(out, func(a, b control.Blocked) int { return b.Last.Compare(a.Last) })
+	return out
 }
 
 // liveRules keeps the router's rules in step with the rules file, so

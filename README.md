@@ -34,7 +34,16 @@ On the home device, paste the join command `add` printed:
 domicile agent join dj1.…
 ```
 
-Point your agent's browser or HTTP client at the proxy URL `init` printed (`socks5h://agent:…@127.0.0.1:1080`). Domains with a rule go out through home; everything else goes direct from the VPS. `domicile remove home` revokes the device; the server disconnects it within a second.
+Point your agent's tools at the proxy, each with its own credential:
+
+```sh
+domicile connect playwright-mcp     # updates .mcp.json, or prints the `claude mcp add` command
+domicile connect agent-browser      # sets the proxy in ~/.agent-browser/config.json
+domicile connect shell              # prints ALL_PROXY / HTTPS_PROXY exports
+domicile run -- node agent.js       # any command; Node's fetch needs Node 22.21+ or 24+
+```
+
+`connect <tool> -undo` restores the tool's file and revokes its credential. Anything else can use the proxy URL `init` printed (`socks5h://agent:…@127.0.0.1:1080`). Domains with a rule go out through home; everything else goes direct from the VPS. `domicile remove home` revokes the device; the server disconnects it within a second.
 
 Rule changes apply to a running server within a second. See what is connected and which rules are active:
 
@@ -48,11 +57,6 @@ Check what sites see through each exit (run on the VPS while the server runs):
 domicile verify          # add -json for scripts; exits non-zero if a check fails
 ```
 
-### Planned
-
-```sh
-domicile connect playwright-mcp   # or agent-browser, or shell
-```
 
 `verify` checks what a site actually sees through each exit:
 
@@ -85,7 +89,7 @@ Most agent browser tools already accept a proxy. `domicile connect` writes the s
 | curl, Python, Go, most CLIs | `domicile connect shell` prints the `ALL_PROXY` / `HTTPS_PROXY` exports |
 | Anything else | `domicile run -- <command>`, which also covers Node's built-in `fetch` |
 
-An MCP server (`domicile mcp`) lets an agent check which exit it is on, whether it is healthy, and which hosts recently blocked it. It is read-only. Only you can add rules.
+An MCP server (`domicile mcp`, add it to your agent's MCP config) lets an agent check which exit it is on, run `verify`, and report a site that blocked it. Reports become suggested `domicile rule add` commands; the agent cannot change routing. Only you can add rules.
 
 ## Who this is for
 
