@@ -36,11 +36,16 @@ domicile agent join dj1.…
 
 Point your agent's browser or HTTP client at the proxy URL `init` printed (`socks5h://agent:…@127.0.0.1:1080`). Domains with a rule go out through home; everything else goes direct from the VPS. `domicile remove home` revokes the device; the server disconnects it within a second.
 
+Check what sites see through each exit (run on the VPS while the server runs):
+
+```sh
+domicile verify          # add -json for scripts; exits non-zero if a check fails
+```
+
 ### Planned
 
 ```sh
 domicile connect playwright-mcp   # or agent-browser, or shell
-domicile verify
 ```
 
 `verify` checks what a site actually sees through each exit:

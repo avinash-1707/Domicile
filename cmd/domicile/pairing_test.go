@@ -184,3 +184,13 @@ func TestParseAllow(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintableStripsControlCharacters(t *testing.T) {
+	got := printable("Jio\x1b[1A\x1b[2KPASS\r\u009b ok")
+	if strings.ContainsAny(got, "\x1b\r\u009b") {
+		t.Fatalf("control characters kept: %q", got)
+	}
+	if got != "Jio[1A[2KPASS ok" {
+		t.Fatalf("got %q", got)
+	}
+}
