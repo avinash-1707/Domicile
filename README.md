@@ -1,8 +1,20 @@
-# domicile
+<p align="center">
+  <img src=".github/assets/header.webp" alt="A server in a datacenter sends most traffic straight to websites, while one route runs through a tunnel to a small device in a house and reaches its website from there." width="100%">
+</p>
 
-![A server in a datacenter sends most traffic straight to websites, while one route runs through a tunnel to a small device in a house and reaches its website from there.](.github/assets/header.webp)
+<h1 align="center">domicile</h1>
 
-Give your VPS agents a home-network exit. domicile sends the domains you choose through your own residential connection and checks what sites see on the other end.
+<p align="center">
+  Give your VPS agents a home-network exit. domicile sends the domains you choose through your own residential connection and checks what sites see on the other end.
+</p>
+
+<p align="center">
+  <a href="https://github.com/avinash-1707/Domicile/releases/latest"><img src="https://img.shields.io/github/v/release/avinash-1707/Domicile" alt="Latest release"></a>
+  <a href="https://github.com/avinash-1707/Domicile/actions/workflows/ci.yml"><img src="https://github.com/avinash-1707/Domicile/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <img src="https://img.shields.io/github/go-mod/go-version/avinash-1707/Domicile" alt="Go version">
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey" alt="Platforms: Linux and macOS">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/avinash-1707/Domicile" alt="License: Apache-2.0"></a>
+</p>
 
 - [Why](#why)
 - [Install](#install)
@@ -46,7 +58,7 @@ The script downloads the latest release binary, checks it against the release's 
 | `DOMICILE_BIN_DIR` | Install somewhere other than `/usr/local/bin` |
 | `DOMICILE_YES=1` | Answer yes to every question, for unattended installs |
 
-With Go 1.26 or later you can install it with `go install` instead:
+With Go 1.26.5 or later you can install it with `go install` instead:
 
 ```sh
 go install github.com/avinash-1707/domicile/cmd/domicile@latest
@@ -227,7 +239,7 @@ Use your own connection for your own agents. domicile is not meant for large-sca
 
 ## Building from source
 
-You need Go 1.26 or later.
+You need Go 1.26.5 or later.
 
 ```sh
 git clone https://github.com/avinash-1707/domicile.git
