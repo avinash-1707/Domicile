@@ -33,6 +33,10 @@ type PipeError struct {
 	// ToConn is true when copying from the stream to the connection failed,
 	// false when copying from the connection to the stream failed.
 	ToConn bool
+	// Write is true when writing to the direction's receiver failed, false
+	// when reading from its sender did. With ToConn it says which peer
+	// failed: (ToConn && Write) or (!ToConn && !Write) means c.
+	Write bool
 	// OtherDone is true when the opposite direction finished cleanly, so
 	// everything sent that way was delivered. A web server that stops
 	// reading after its response, while the client's last bytes are in
@@ -50,6 +54,10 @@ func (e *PipeError) Error() string {
 }
 
 func (e *PipeError) Unwrap() error { return e.Err }
+
+// ConnFailed reports whether the failure was on c's side rather than the
+// stream's.
+func (e *PipeError) ConnFailed() bool { return e.ToConn == e.Write }
 
 // Pipe copies between st and c until both directions finish, then closes
 // both. A clean end in one direction is passed on as a half-close.
@@ -99,7 +107,7 @@ func Pipe(ctx context.Context, st Stream, c HalfCloser, stallTimeout time.Durati
 			continue
 		}
 		if first == nil {
-			first = &PipeError{ToConn: h.toConn, Err: h.res.err}
+			first = &PipeError{ToConn: h.toConn, Write: h.res.write, Err: h.res.err}
 		}
 		if h.res.write && !h.toConn && errors.Is(h.res.err, ErrPeerStoppedReading) {
 			// The stream's far end refused this direction; nothing to undo.

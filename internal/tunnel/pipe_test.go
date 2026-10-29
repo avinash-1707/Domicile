@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -415,5 +416,162 @@ func TestPipePeerAbortAfterFINIsNotTreatedAsStop(t *testing.T) {
 	case <-destErr:
 	case <-time.After(2 * time.Second):
 		t.Fatal("destination was not cut off")
+	}
+}
+
+func TestPipeTCPToTCP(t *testing.T) {
+	// The direct path: both sides are TCP. Half-close carries through and a
+	// destination reset reaches the client as a reset.
+	t.Run("half close", func(t *testing.T) {
+		addr := tcpServer(t, func(c *net.TCPConn) {
+			defer c.Close()
+			n, err := io.Copy(io.Discard, c)
+			if err == nil {
+				fmt.Fprintf(c, "got %d", n)
+				c.CloseWrite()
+			}
+		})
+		client, dst := tcpPair(t, addr)
+		done := make(chan error, 1)
+		go func() {
+			done <- tunnel.Pipe(context.Background(), tunnel.TCPStream(dst, stallTimeout), client.server, stallTimeout)
+		}()
+		client.conn.Write(make([]byte, 100<<10))
+		client.conn.CloseWrite()
+		got, err := io.ReadAll(client.conn)
+		if err != nil || string(got) != "got 102400" {
+			t.Fatalf("got %q, %v", got, err)
+		}
+		if err := waitDone(t, done); err != nil {
+			t.Fatalf("Pipe = %v after a clean exchange", err)
+		}
+	})
+	t.Run("destination reset", func(t *testing.T) {
+		addr := tcpServer(t, func(c *net.TCPConn) {
+			c.Write([]byte("partial"))
+			c.SetLinger(0)
+			c.Close()
+		})
+		client, dst := tcpPair(t, addr)
+		done := make(chan error, 1)
+		go func() {
+			done <- tunnel.Pipe(context.Background(), tunnel.TCPStream(dst, stallTimeout), client.server, stallTimeout)
+		}()
+		if _, err := io.ReadAll(client.conn); err == nil {
+			t.Fatal("client read a reset destination as a clean end")
+		}
+		if waitDone(t, done) == nil {
+			t.Fatal("Pipe returned nil after the destination reset")
+		}
+	})
+}
+
+func TestPipeTCPToTCPEdgeCases(t *testing.T) {
+	t.Run("destination never reads", func(t *testing.T) {
+		addr := tcpServer(t, func(c *net.TCPConn) {
+			time.Sleep(30 * time.Second)
+			c.Close()
+		})
+		client, dst := tcpPair(t, addr)
+		done := make(chan error, 1)
+		go func() {
+			done <- tunnel.Pipe(context.Background(), tunnel.TCPStream(dst, stallTimeout), client.server, stallTimeout)
+		}()
+		go client.conn.Write(make([]byte, 8<<20))
+		if waitDone(t, done) == nil {
+			t.Fatal("Pipe returned nil for a stalled destination")
+		}
+	})
+
+	t.Run("client reset reaches destination as reset", func(t *testing.T) {
+		destErr := make(chan error, 1)
+		addr := tcpServer(t, func(c *net.TCPConn) {
+			defer c.Close()
+			_, err := io.Copy(io.Discard, c)
+			destErr <- err
+		})
+		client, dst := tcpPair(t, addr)
+		go tunnel.Pipe(context.Background(), tunnel.TCPStream(dst, stallTimeout), client.server, stallTimeout)
+		client.conn.Write(make([]byte, 64<<10))
+		time.Sleep(50 * time.Millisecond)
+		client.conn.SetLinger(0)
+		client.conn.Close()
+		select {
+		case err := <-destErr:
+			if err == nil {
+				t.Fatal("destination saw a clean end for an upload the client aborted")
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("destination never learned of the abort")
+		}
+	})
+
+	t.Run("write to a closed peer is a stop", func(t *testing.T) {
+		gone := make(chan struct{})
+		addr := tcpServer(t, func(c *net.TCPConn) {
+			c.Close()
+			close(gone)
+		})
+		_, dst := tcpPair(t, addr)
+		<-gone
+		st := tunnel.TCPStream(dst, stallTimeout)
+		var err error
+		for range 50 { // the first writes can succeed before the RST comes back
+			if _, err = st.Write(make([]byte, 32<<10)); err != nil {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !errors.Is(err, tunnel.ErrPeerStoppedReading) {
+			t.Fatalf("write to a closed peer = %v, want ErrPeerStoppedReading", err)
+		}
+	})
+}
+
+type clientSide struct {
+	conn   *net.TCPConn // the client's end
+	server *net.TCPConn // the proxy's end of the client connection
+}
+
+// tcpPair returns a connected client pair and a connection to addr.
+func tcpPair(t *testing.T, addr string) (clientSide, *net.TCPConn) {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, _ := l.Accept()
+		accepted <- c
+	}()
+	cc, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc := <-accepted
+	dc, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cc.Close(); sc.Close(); dc.Close() })
+	return clientSide{cc.(*net.TCPConn), sc.(*net.TCPConn)}, dc.(*net.TCPConn)
+}
+
+func TestPipeErrorConnFailed(t *testing.T) {
+	tests := []struct {
+		toConn, write, want bool
+	}{
+		{true, true, true},   // writing to c failed
+		{false, false, true}, // reading from c failed
+		{true, false, false}, // reading from the stream failed
+		{false, true, false}, // writing to the stream failed
+	}
+	for _, tt := range tests {
+		e := &tunnel.PipeError{ToConn: tt.toConn, Write: tt.write, Err: io.ErrUnexpectedEOF}
+		if got := e.ConnFailed(); got != tt.want {
+			t.Errorf("ToConn=%v Write=%v: ConnFailed = %v, want %v", tt.toConn, tt.write, got, tt.want)
+		}
 	}
 }
