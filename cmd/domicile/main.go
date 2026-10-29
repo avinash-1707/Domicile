@@ -17,11 +17,19 @@ import (
 const usage = `domicile gives agents on a VPS a home-network exit.
 
 Usage:
-  domicile server [flags]   run the VPS side
-  domicile agent [flags]    run the exit on a home device
+  On the VPS:
+  domicile init [-public-addr host:port]   create state, certificate, first proxy user
+  domicile add <exit> [-addr host:port]     print a one-time join code for a home device
+  domicile remove <exit>                    revoke an exit (disconnects it within a second)
+  domicile user add|remove|list             manage proxy users
+  domicile server [flags]                   run the VPS side
   domicile rule add <domain> -via <exit> [flags]
   domicile rule remove <domain> [-exact]
   domicile rule list
+
+  On the home device:
+  domicile agent join <code>                pair with the server, then run
+  domicile agent                            run (after pairing)
 
 Run "domicile <command> -h" for a command's flags.
 `
@@ -46,6 +54,14 @@ func main() {
 		err = runAgent(ctx, args, log)
 	case "rule":
 		err = runRule(args, os.Stdout)
+	case "init":
+		err = runInit(args, os.Stdout)
+	case "add":
+		err = runAdd(args, os.Stdout)
+	case "remove":
+		err = runRemove(args, os.Stdout)
+	case "user":
+		err = runUser(args, os.Stdout)
 	case "-h", "-help", "--help", "help":
 		fmt.Print(usage)
 		return

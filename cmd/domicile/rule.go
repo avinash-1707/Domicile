@@ -39,7 +39,7 @@ func ruleAdd(args []string, out io.Writer) error {
 	fallback := fs.Bool("fallback-direct", false, "go direct from the VPS when the exit is down (default: refuse)")
 	note := fs.String("note", "", "why this rule exists")
 	configPath := fs.String("config", defaultConfigPath(), "rules file")
-	domain, err := domainAndFlags(fs, args, "add <domain> -via <exit>")
+	domain, err := positionalAndFlags(fs, args, "rule add <domain> -via <exit>")
 	if err != nil {
 		return err
 	}
@@ -82,7 +82,7 @@ func ruleRemove(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("rule remove", flag.ContinueOnError)
 	exact := fs.Bool("exact", false, "remove the exact-match rule rather than the domain rule")
 	configPath := fs.String("config", defaultConfigPath(), "rules file")
-	domain, err := domainAndFlags(fs, args, "remove <domain>")
+	domain, err := positionalAndFlags(fs, args, "rule remove <domain>")
 	if err != nil {
 		return err
 	}
@@ -128,10 +128,11 @@ func ruleList(args []string, out io.Writer) error {
 	return tw.Flush()
 }
 
-// domainAndFlags accepts the domain anywhere among the flags, so both the
-// documented `rule add reddit.com -via home` and `rule add -via home
-// reddit.com` work; the flag package alone stops at the first non-flag.
-func domainAndFlags(fs *flag.FlagSet, args []string, usage string) (string, error) {
+// positionalAndFlags accepts one positional argument anywhere among the
+// flags, so both the documented `rule add reddit.com -via home` and `rule add
+// -via home reddit.com` work; the flag package alone stops at the first
+// non-flag. usage is the command line shown on error.
+func positionalAndFlags(fs *flag.FlagSet, args []string, usage string) (string, error) {
 	var domain string
 	for {
 		if err := fs.Parse(args); err != nil {
@@ -144,12 +145,12 @@ func domainAndFlags(fs *flag.FlagSet, args []string, usage string) (string, erro
 			break
 		}
 		if domain != "" {
-			return "", fmt.Errorf("unexpected argument %q; usage: domicile rule %s", fs.Arg(0), usage)
+			return "", fmt.Errorf("unexpected argument %q; usage: domicile %s", fs.Arg(0), usage)
 		}
 		domain, args = fs.Arg(0), fs.Args()[1:]
 	}
 	if domain == "" {
-		return "", errors.New("usage: domicile rule " + usage)
+		return "", errors.New("usage: domicile " + usage)
 	}
 	return domain, nil
 }

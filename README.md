@@ -15,25 +15,30 @@ agent browser → domicile on the VPS → rule matches? → tunnel → your home
                                     → no match      → direct from the VPS
 ```
 
-## Planned usage
+## Usage
+
+There are no release binaries or install script yet; build with `go build ./cmd/domicile` on both machines. Linux and macOS are supported on both sides.
 
 On the VPS:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/avinash-1707/domicile/main/install.sh | sh
-domicile init                 # starts the server, prints a one-line join command
+domicile init -public-addr vps.example.com:443   # creates state and prints your proxy URL
+domicile add home                                # prints a one-time join command
+domicile rule add reddit.com -via home
+domicile server
 ```
 
-On the home device, paste the join command it printed:
+On the home device, paste the join command `add` printed:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/avinash-1707/domicile/main/install.sh | sh -s -- join <token>
+domicile agent join dj1.…
 ```
 
-Back on the VPS:
+Point your agent's browser or HTTP client at the proxy URL `init` printed (`socks5h://agent:…@127.0.0.1:1080`). Domains with a rule go out through home; everything else goes direct from the VPS. `domicile remove home` revokes the device; the server disconnects it within a second.
+
+### Planned
 
 ```sh
-domicile rule add reddit.com --via home
 domicile connect playwright-mcp   # or agent-browser, or shell
 domicile verify
 ```

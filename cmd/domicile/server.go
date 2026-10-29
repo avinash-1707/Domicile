@@ -9,25 +9,21 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
+	"time"
 
 	"github.com/avinash-1707/domicile/internal/certs"
 	"github.com/avinash-1707/domicile/internal/proxy"
 	"github.com/avinash-1707/domicile/internal/route"
 	"github.com/avinash-1707/domicile/internal/rules"
 	"github.com/avinash-1707/domicile/internal/server"
+	"github.com/avinash-1707/domicile/internal/state"
 	"github.com/avinash-1707/domicile/internal/tunnel"
 	"github.com/avinash-1707/domicile/internal/tunnel/quictun"
-	"github.com/avinash-1707/domicile/internal/wire"
 )
 
-// Credentials come from environment variables, which keep them out of `ps`.
-// SIMPLIFIED: replaced by `domicile add` and stored, hashed credentials once
-// registration exists.
-const (
-	exitsEnv      = "DOMICILE_EXITS"       // exit name=token pairs
-	proxyUsersEnv = "DOMICILE_PROXY_USERS" // proxy user=password pairs
-)
+// stateReloadEvery is how often the server re-reads the state file, which
+// bounds how long a removed exit or proxy user keeps working.
+const stateReloadEvery = time.Second
 
 // defaultProxyAddr is loopback so the proxy is never reachable from other
 // hosts unless explicitly configured.
@@ -37,29 +33,15 @@ func runServer(ctx context.Context, args []string, log *slog.Logger) error {
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
 	listen := fs.String("listen", ":443", "UDP address exits connect to")
 	proxyAddr := fs.String("proxy", defaultProxyAddr, "TCP address of the SOCKS5 / HTTP CONNECT proxy for agents")
-	stateDir := fs.String("state-dir", defaultStateDir(), "directory for the server certificate")
+	stateDir := fs.String("state-dir", defaultStateDir(), "directory for server state and certificate (from `domicile init`)")
 	configPath := fs.String("config", "", "rules file (default <state-dir>/domicile.json)")
-	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: domicile server [flags]\n\nCredentials come from the environment, as comma-separated pairs:\n  %s=name=token\n  %s=user=password\n\nFlags:\n", exitsEnv, proxyUsersEnv)
-		fs.PrintDefaults()
-	}
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
-	exits, err := parseCredentials(os.Getenv(exitsEnv))
+	live, err := state.OpenLive(statePath(*stateDir))
 	if err != nil {
-		return fmt.Errorf("%s: %w", exitsEnv, err)
-	}
-	users, err := parseCredentials(os.Getenv(proxyUsersEnv))
-	if err != nil {
-		return fmt.Errorf("%s: %w", proxyUsersEnv, err)
-	}
-	for user := range users {
-		// HTTP Basic auth splits user:password at the first colon.
-		if strings.Contains(user, ":") {
-			return fmt.Errorf("%s: user %q must not contain ':'", proxyUsersEnv, user)
-		}
+		return err
 	}
 	explicitConfig := *configPath != ""
 	if !explicitConfig {
@@ -79,8 +61,8 @@ func runServer(ctx context.Context, args []string, log *slog.Logger) error {
 		return err
 	}
 	for _, r := range conf.Rules {
-		if _, ok := exits[r.Via]; !ok {
-			return fmt.Errorf("rule for %s uses exit %q, which is not in %s", r.Match, r.Via, exitsEnv)
+		if _, ok := live.State().Exits[r.Via]; !ok {
+			return fmt.Errorf("rule for %s uses exit %q, which has not been added; run `domicile add %s`", r.Match, r.Via, r.Via)
 		}
 	}
 	cert, err := certs.LoadOrCreate(*stateDir)
@@ -108,11 +90,11 @@ func runServer(ctx context.Context, args []string, log *slog.Logger) error {
 		log.Warn("proxy is reachable from other hosts; credentials are still required, and direct connections to local and private addresses are refused", "addr", pl.Addr().String())
 	}
 
-	srv := server.New(server.Config{Exits: exits, Logger: log})
+	srv := server.New(server.Config{Auth: live, Logger: log})
 	// SIMPLIFIED: rules are read once at start; `domicile rule` changes need
 	// a restart until the control socket can reload them live.
 	router := route.New(rules.NewTable(conf), srv, log, route.Options{BlockLocalDirect: exposed})
-	prx, err := proxy.New(proxy.Config{Users: users, Dial: router.Dial, Logger: log})
+	prx, err := proxy.New(proxy.Config{CheckUser: live.CheckUser, Dial: router.Dial, Logger: log})
 	if err != nil {
 		l.Close()
 		pl.Close()
@@ -126,6 +108,7 @@ func runServer(ctx context.Context, args []string, log *slog.Logger) error {
 	errc := make(chan error, 2)
 	go func() { errc <- prx.Serve(ctx, pl) }()
 	go func() { errc <- srv.Serve(ctx, l) }()
+	go watchState(ctx, live, srv, log)
 	first := <-errc
 	cancel()
 	second := <-errc
@@ -138,36 +121,31 @@ func isLoopback(a net.Addr) bool {
 	return ok && ta.IP.IsLoopback()
 }
 
-// minSecretLen keeps stopgap tokens and passwords out of guessing range: the
-// server does not throttle failed attempts, and a guessed exit token takes
-// over the exit.
-const minSecretLen = 32
-
-// parseCredentials parses "name=secret,name=secret". Names must be unique,
-// secrets at least minSecretLen bytes, and both fit in a wire frame.
-func parseCredentials(s string) (map[string]string, error) {
-	creds := make(map[string]string)
-	if strings.TrimSpace(s) == "" {
-		return nil, errors.New("not set")
+// watchState reloads the state file when the CLI changes it, and drops
+// sessions whose exit was removed or re-paired.
+func watchState(ctx context.Context, live *state.Live, srv *server.Server, log *slog.Logger) {
+	t := time.NewTicker(stateReloadEvery)
+	defer t.Stop()
+	seen := live.Generation()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if err := live.Reload(); err != nil {
+			// Keep serving with the last good state; a half-edited or
+			// unreadable file must not take every exit offline.
+			log.Error("reload state", "err", err)
+			continue
+		}
+		// Compare generations, not "did this Reload change anything": a
+		// join's own reload may already have absorbed a removal.
+		if g := live.Generation(); g != seen {
+			seen = g
+			srv.Revalidate()
+		}
 	}
-	for pair := range strings.SplitSeq(s, ",") {
-		name, secret, ok := strings.Cut(strings.TrimSpace(pair), "=")
-		if !ok || name == "" || secret == "" {
-			// The pair may contain a secret, so it is not echoed back.
-			return nil, errors.New("each entry must be name=secret")
-		}
-		if len(name) > wire.MaxField {
-			return nil, fmt.Errorf("name longer than %d bytes", wire.MaxField)
-		}
-		if len(secret) < minSecretLen || len(secret) > wire.MaxField {
-			return nil, fmt.Errorf("secret for %q must be %d to %d bytes; generate one with `openssl rand -hex 32`", name, minSecretLen, wire.MaxField)
-		}
-		if _, dup := creds[name]; dup {
-			return nil, fmt.Errorf("%q listed twice", name)
-		}
-		creds[name] = secret
-	}
-	return creds, nil
 }
 
 // defaultStateDir follows systemd's StateDirectory= when set, otherwise the
