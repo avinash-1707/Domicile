@@ -35,8 +35,9 @@ const (
 	maxHandshakeBytes = 16 << 10
 )
 
-// DialFunc opens a stream to dst.
-type DialFunc func(ctx context.Context, dst wire.Open) (tunnel.Stream, error)
+// DialFunc opens a stream to dst and names the path it took (an exit or
+// "direct") for the log.
+type DialFunc func(ctx context.Context, dst wire.Open) (st tunnel.Stream, path string, err error)
 
 // Config configures a proxy Server.
 type Config struct {
@@ -144,11 +145,11 @@ func (s *Server) handle(ctx context.Context, c *net.TCPConn) {
 	}
 
 	dctx, cancel := context.WithTimeout(ctx, dialTimeout)
-	st, err := s.cfg.Dial(dctx, dst)
+	st, path, err := s.cfg.Dial(dctx, dst)
 	cancel()
 	o := outcomeOf(err)
 	if err != nil {
-		s.log.Info("proxy connect failed", "proto", proto, "host", dst.Host, "port", dst.Port, "result", o.reason, "err", err)
+		s.log.Info("proxy connect failed", "proto", proto, "host", dst.Host, "port", dst.Port, "via", path, "result", o.reason, "err", err)
 		s.reply(c, proto, o)
 		c.Close()
 		return
@@ -172,7 +173,7 @@ func (s *Server) handle(ctx context.Context, c *net.TCPConn) {
 	}
 
 	pipeErr := tunnel.Pipe(ctx, st, &bufferedConn{TCPConn: c, r: br}, s.cfg.StallTimeout)
-	attrs := []any{"proto", proto, "host", dst.Host, "port", dst.Port, "duration", time.Since(start).Round(time.Millisecond)}
+	attrs := []any{"proto", proto, "host", dst.Host, "port", dst.Port, "via", path, "duration", time.Since(start).Round(time.Millisecond)}
 	var pe *tunnel.PipeError
 	switch {
 	case pipeErr == nil:
@@ -181,6 +182,12 @@ func (s *Server) handle(ctx context.Context, c *net.TCPConn) {
 		// The whole response reached the client; only the client's last
 		// bytes were cut, typically a TLS close the server no longer read.
 		s.log.Info("proxied", append(attrs, "result", "ok", "upload_cut", pe.Err)...)
+	case ctx.Err() != nil:
+		s.log.Info("proxied", append(attrs, "result", "shutdown")...)
+	case errors.As(pipeErr, &pe) && pe.ConnFailed():
+		// The client hung up or reset, usually right after getting what it
+		// wanted; the destination side was fine.
+		s.log.Info("proxied", append(attrs, "result", "client_closed", "err", pe.Err)...)
 	default:
 		s.log.Info("proxied", append(attrs, "result", "aborted", "err", pipeErr)...)
 	}
@@ -208,8 +215,9 @@ type outcome struct {
 	reason string
 }
 
-// outcomeOf maps a dial error to client-visible codes. Every failure fails
-// closed: the proxy never retries over another path.
+// outcomeOf maps a dial error to client-visible codes. The proxy never
+// retries on its own; only the router's fallback_direct rules choose another
+// path.
 func outcomeOf(err error) outcome {
 	if err == nil {
 		return outcome{socksSucceeded, http.StatusOK, "ok"}

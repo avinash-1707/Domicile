@@ -13,6 +13,8 @@ import (
 
 	"github.com/avinash-1707/domicile/internal/certs"
 	"github.com/avinash-1707/domicile/internal/proxy"
+	"github.com/avinash-1707/domicile/internal/route"
+	"github.com/avinash-1707/domicile/internal/rules"
 	"github.com/avinash-1707/domicile/internal/server"
 	"github.com/avinash-1707/domicile/internal/tunnel"
 	"github.com/avinash-1707/domicile/internal/tunnel/quictun"
@@ -35,8 +37,8 @@ func runServer(ctx context.Context, args []string, log *slog.Logger) error {
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
 	listen := fs.String("listen", ":443", "UDP address exits connect to")
 	proxyAddr := fs.String("proxy", defaultProxyAddr, "TCP address of the SOCKS5 / HTTP CONNECT proxy for agents")
-	via := fs.String("via", "", "exit that carries all proxied traffic (default: the only configured exit)")
 	stateDir := fs.String("state-dir", defaultStateDir(), "directory for the server certificate")
+	configPath := fs.String("config", "", "rules file (default <state-dir>/domicile.json)")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: domicile server [flags]\n\nCredentials come from the environment, as comma-separated pairs:\n  %s=name=token\n  %s=user=password\n\nFlags:\n", exitsEnv, proxyUsersEnv)
 		fs.PrintDefaults()
@@ -59,9 +61,27 @@ func runServer(ctx context.Context, args []string, log *slog.Logger) error {
 			return fmt.Errorf("%s: user %q must not contain ':'", proxyUsersEnv, user)
 		}
 	}
-	route, err := routeExit(*via, exits)
+	explicitConfig := *configPath != ""
+	if !explicitConfig {
+		*configPath = filepath.Join(*stateDir, configFile)
+	}
+	// A missing rules file means every destination goes direct, so it must
+	// never be silent: a typo in -config would send ruled traffic out of
+	// the datacenter IP.
+	if _, err := os.Stat(*configPath); errors.Is(err, os.ErrNotExist) {
+		if explicitConfig {
+			return fmt.Errorf("-config %s does not exist", *configPath)
+		}
+		log.Warn("no rules file; all traffic goes direct from the VPS", "config", *configPath)
+	}
+	conf, err := rules.Load(*configPath)
 	if err != nil {
 		return err
+	}
+	for _, r := range conf.Rules {
+		if _, ok := exits[r.Via]; !ok {
+			return fmt.Errorf("rule for %s uses exit %q, which is not in %s", r.Match, r.Via, exitsEnv)
+		}
 	}
 	cert, err := certs.LoadOrCreate(*stateDir)
 	if err != nil {
@@ -83,26 +103,22 @@ func runServer(ctx context.Context, args []string, log *slog.Logger) error {
 		l.Close()
 		return fmt.Errorf("proxy listen: %w", err)
 	}
-	if !isLoopback(pl.Addr()) {
-		log.Warn("proxy is reachable from other hosts; credentials are still required", "addr", pl.Addr().String())
+	exposed := !isLoopback(pl.Addr())
+	if exposed {
+		log.Warn("proxy is reachable from other hosts; credentials are still required, and direct connections to local and private addresses are refused", "addr", pl.Addr().String())
 	}
 
 	srv := server.New(server.Config{Exits: exits, Logger: log})
-	prx, err := proxy.New(proxy.Config{
-		Users: users,
-		// SIMPLIFIED: every connection goes through one exit until domain
-		// rules choose per destination.
-		Dial: func(ctx context.Context, dst wire.Open) (tunnel.Stream, error) {
-			return srv.Dial(ctx, route, dst)
-		},
-		Logger: log,
-	})
+	// SIMPLIFIED: rules are read once at start; `domicile rule` changes need
+	// a restart until the control socket can reload them live.
+	router := route.New(rules.NewTable(conf), srv, log, route.Options{BlockLocalDirect: exposed})
+	prx, err := proxy.New(proxy.Config{Users: users, Dial: router.Dial, Logger: log})
 	if err != nil {
 		l.Close()
 		pl.Close()
 		return err
 	}
-	log.Info("server listening", "tunnel", l.Addr().String(), "proxy", pl.Addr().String(), "via", route, "fingerprint", pin.String())
+	log.Info("server listening", "tunnel", l.Addr().String(), "proxy", pl.Addr().String(), "rules", len(conf.Rules), "config", *configPath, "fingerprint", pin.String())
 
 	// Either loop failing stops the other.
 	ctx, cancel := context.WithCancel(ctx)
@@ -115,23 +131,6 @@ func runServer(ctx context.Context, args []string, log *slog.Logger) error {
 	second := <-errc
 	// Serve has closed every exit session; closing the listener now is clean.
 	return errors.Join(first, second, l.Close())
-}
-
-// routeExit picks the exit for all proxied traffic.
-func routeExit(via string, exits map[string]string) (string, error) {
-	if via != "" {
-		if _, ok := exits[via]; !ok {
-			return "", fmt.Errorf("-via %q is not a configured exit", via)
-		}
-		return via, nil
-	}
-	if len(exits) != 1 {
-		return "", errors.New("several exits configured; choose one with -via")
-	}
-	for name := range exits {
-		return name, nil
-	}
-	panic("unreachable")
 }
 
 func isLoopback(a net.Addr) bool {

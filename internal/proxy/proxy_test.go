@@ -83,8 +83,9 @@ func newEnv(t *testing.T, withExit bool) *env {
 	logs := &syncBuffer{}
 	p, err := proxy.New(proxy.Config{
 		Users: map[string]string{proxyUser: proxyPass},
-		Dial: func(ctx context.Context, dst wire.Open) (tunnel.Stream, error) {
-			return srv.Dial(ctx, "home", dst)
+		Dial: func(ctx context.Context, dst wire.Open) (tunnel.Stream, string, error) {
+			st, err := srv.Dial(ctx, "home", dst)
+			return st, "home", err
 		},
 		Logger: slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
@@ -350,7 +351,7 @@ func TestDestinationRefusedReported(t *testing.T) {
 }
 
 func TestNewRequiresUsers(t *testing.T) {
-	_, err := proxy.New(proxy.Config{Dial: func(context.Context, wire.Open) (tunnel.Stream, error) { return nil, nil }})
+	_, err := proxy.New(proxy.Config{Dial: func(context.Context, wire.Open) (tunnel.Stream, string, error) { return nil, "", nil }})
 	if err == nil {
 		t.Fatal("proxy started without any users")
 	}

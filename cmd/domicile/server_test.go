@@ -56,23 +56,6 @@ func TestParseCredentialsDoesNotEchoSecrets(t *testing.T) {
 	}
 }
 
-func TestRouteExit(t *testing.T) {
-	one := map[string]string{"home": "x"}
-	two := map[string]string{"home": "x", "office": "y"}
-	if got, err := routeExit("", one); err != nil || got != "home" {
-		t.Fatalf("single exit = %q, %v", got, err)
-	}
-	if _, err := routeExit("", two); err == nil {
-		t.Fatal("picked an exit arbitrarily among several")
-	}
-	if got, err := routeExit("office", two); err != nil || got != "office" {
-		t.Fatalf("-via office = %q, %v", got, err)
-	}
-	if _, err := routeExit("garage", two); err == nil {
-		t.Fatal("accepted -via for an unknown exit")
-	}
-}
-
 func TestDefaultProxyAddrIsLoopback(t *testing.T) {
 	host, _, err := net.SplitHostPort(defaultProxyAddr)
 	if err != nil {

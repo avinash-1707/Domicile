@@ -19,6 +19,9 @@ const usage = `domicile gives agents on a VPS a home-network exit.
 Usage:
   domicile server [flags]   run the VPS side
   domicile agent [flags]    run the exit on a home device
+  domicile rule add <domain> -via <exit> [flags]
+  domicile rule remove <domain> [-exact]
+  domicile rule list
 
 Run "domicile <command> -h" for a command's flags.
 `
@@ -41,6 +44,8 @@ func main() {
 		err = runServer(ctx, args, log)
 	case "agent":
 		err = runAgent(ctx, args, log)
+	case "rule":
+		err = runRule(args, os.Stdout)
 	case "-h", "-help", "--help", "help":
 		fmt.Print(usage)
 		return
