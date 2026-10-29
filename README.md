@@ -2,7 +2,7 @@
 
 Give your VPS agents a home-network exit. domicile routes selected domains through your own residential connection and verifies the exit IP and leaks.
 
-> Status: early development. Nothing here is usable yet. The commands below describe the planned v1 and will change.
+> Status: early development. Every command below works, but there is no tagged release yet and flags may still change.
 
 ## Why
 
@@ -15,9 +15,17 @@ agent browser → domicile on the VPS → rule matches? → tunnel → your home
                                     → no match      → direct from the VPS
 ```
 
-## Usage
+## Install
 
-There are no release binaries or install script yet; build with `go build ./cmd/domicile` on both machines. Linux and macOS are supported on both sides.
+Linux and macOS, amd64 and arm64, on both machines:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/avinash-1707/domicile/main/install.sh | sh
+```
+
+The script downloads the latest release binary, checks it against the release's `SHA256SUMS` and installs it to `/usr/local/bin` (set `DOMICILE_BIN_DIR` to change that). It asks before using sudo. On Linux it offers to raise the UDP buffer limits QUIC needs. Until the first release is tagged, build from source with Go 1.26: `go build ./cmd/domicile`.
+
+## Usage
 
 On the VPS:
 
@@ -33,6 +41,21 @@ On the home device, paste the join command `add` printed:
 ```sh
 domicile agent join dj1.…
 ```
+
+Or install and pair in one step, which also offers to set it up as a service:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/avinash-1707/domicile/main/install.sh | sh -s -- join dj1.…
+```
+
+To keep either side running across reboots, install it as a service. On Linux this writes a hardened systemd unit that runs as your user (run it with sudo); on macOS it writes a launchd agent:
+
+```sh
+sudo domicile service install server     # on the VPS
+domicile service install agent           # on the home device; sudo on Linux
+```
+
+`-print` shows the unit and the commands without changing anything, and `service uninstall` removes it. A device whose credential was revoked stops instead of retrying.
 
 Point your agent's tools at the proxy, each with its own credential:
 
