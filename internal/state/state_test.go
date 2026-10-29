@@ -237,3 +237,25 @@ func TestLockTimesOut(t *testing.T) {
 		t.Fatalf("waited %v for a held lock, want about %v", d, lockTimeout)
 	}
 }
+
+func TestCheckUserSeesNewCredentialAtOnce(t *testing.T) {
+	path := newState(t)
+	l, _ := OpenLive(path)
+	// The CLI adds a user while the server runs, and the client uses it at
+	// once, before any periodic reload.
+	Update(path, func(st *State) error {
+		st.Users["run"] = User{PasswordSHA256: secret.Digest("fresh")}
+		return nil
+	})
+	if !l.CheckUser("run", "fresh") {
+		t.Fatal("a just-written credential was refused on first use")
+	}
+	// Wrong passwords right after do not each trigger a re-read.
+	gen := l.Generation()
+	for range 50 {
+		l.CheckUser("run", "wrong")
+	}
+	if l.Generation() != gen {
+		t.Fatal("failed logins forced reloads of an unchanged file")
+	}
+}

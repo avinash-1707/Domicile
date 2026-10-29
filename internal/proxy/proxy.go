@@ -125,11 +125,15 @@ func (s *Server) handle(ctx context.Context, c *net.TCPConn) {
 		c.Close()
 		return
 	}
-	proto, handshake := "http", httpConnectHandshake
+	proto := "http"
+	var dst wire.Open
+	var fwd *http.Request
 	if first[0] == socksVersion {
-		proto, handshake = "socks5", socksHandshake
+		proto = "socks5"
+		dst, err = socksHandshake(br, c, s.cfg.CheckUser)
+	} else {
+		dst, fwd, err = httpConnectHandshake(br, c, s.cfg.CheckUser)
 	}
-	dst, err := handshake(br, c, s.cfg.CheckUser)
 	if err != nil {
 		// Auth failures are logged without the attempted credentials.
 		s.log.Info("proxy handshake failed", "proto", proto, "err", err)
@@ -152,6 +156,10 @@ func (s *Server) handle(ctx context.Context, c *net.TCPConn) {
 		s.log.Info("proxy connect failed", "proto", proto, "host", dst.Host, "port", dst.Port, "via", path, "result", o.reason, "err", err)
 		s.reply(c, proto, o)
 		c.Close()
+		return
+	}
+	if fwd != nil {
+		s.forward(ctx, c, st, fwd, dst, path, start)
 		return
 	}
 	if err := s.reply(c, proto, o); err != nil {
@@ -203,6 +211,47 @@ func (s *Server) reply(w io.Writer, proto string, o outcome) error {
 	}
 	return writeHTTPStatus(w, o.http, "X-Domicile-Result: "+o.reason+"\r\n")
 }
+
+// forward sends one plain-HTTP request through st and relays the response.
+// The connection carries that single exchange and is then closed.
+func (s *Server) forward(ctx context.Context, c *net.TCPConn, st tunnel.Stream, req *http.Request, dst wire.Open, path string, start time.Time) {
+	defer st.Close()
+	defer c.Close()
+	stop := context.AfterFunc(ctx, func() { st.Close(); c.Close() })
+	defer stop()
+	_ = c.SetDeadline(time.Time{})
+	attrs := []any{"proto", "http-forward", "host", dst.Host, "port", dst.Port, "via", path}
+
+	if err := forwardRequest(st, req); err != nil {
+		s.log.Info("proxied", append(attrs, "result", "aborted", "err", err)...)
+		_ = c.SetLinger(0)
+		return
+	}
+	// No half-close after the request: some servers drop a request whose
+	// client sent FIN. Connection: close ends the exchange instead.
+	if _, err := io.Copy(stallWriter(c, s.cfg.StallTimeout), st); err != nil {
+		// The response was cut: reset the client rather than end cleanly.
+		_ = c.SetLinger(0)
+		s.log.Info("proxied", append(attrs, "result", "aborted", "err", err)...)
+		return
+	}
+	_ = c.CloseWrite()
+	s.log.Info("proxied", append(attrs, "result", "ok", "duration", time.Since(start).Round(time.Millisecond))...)
+}
+
+// stallWriter fails a write to c that makes no progress for timeout.
+func stallWriter(c *net.TCPConn, timeout time.Duration) io.Writer {
+	return writerFunc(func(p []byte) (int, error) {
+		if err := c.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+			return 0, err
+		}
+		return c.Write(p)
+	})
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 // outcome is how a dial result is reported to each kind of client.
 type outcome struct {

@@ -22,34 +22,60 @@ var (
 	errHTTPMalformed = errors.New("http connect: malformed request")
 )
 
-// httpConnectHandshake reads one CONNECT request and returns its destination.
-// On a protocol or auth error it writes the matching response. Credentials
-// never appear in returned errors.
-func httpConnectHandshake(r *bufio.Reader, w io.Writer, check func(user, pass string) bool) (wire.Open, error) {
+// httpConnectHandshake reads one proxy request and returns its destination.
+// For CONNECT the returned request is nil and the caller tunnels raw bytes.
+// For a plain-HTTP request in absolute form (`GET http://host/path`) the
+// request is returned for the caller to forward. On a protocol or auth error
+// it writes the matching response. Credentials never appear in errors.
+func httpConnectHandshake(r *bufio.Reader, w io.Writer, check func(user, pass string) bool) (wire.Open, *http.Request, error) {
 	// r is read directly: bytes the client sends right after the request
 	// (an early TLS ClientHello) stay buffered in r and are forwarded.
 	req, err := http.ReadRequest(r)
 	if err != nil {
 		_ = writeHTTPStatus(w, http.StatusBadRequest, "")
-		return wire.Open{}, errHTTPMalformed
+		return wire.Open{}, nil, errHTTPMalformed
 	}
-	if req.Method != http.MethodConnect {
-		_ = writeHTTPStatus(w, http.StatusMethodNotAllowed, "Allow: CONNECT\r\n")
-		return wire.Open{}, fmt.Errorf("http connect: method %.16q not supported", req.Method)
+	forward := req.Method != http.MethodConnect
+	if forward && (req.URL.Scheme != "http" || req.URL.Host == "") {
+		// HTTPS goes through CONNECT; anything else is not a proxy request.
+		_ = writeHTTPStatus(w, http.StatusBadRequest, "")
+		return wire.Open{}, nil, errors.New("http proxy: only CONNECT or absolute http:// requests are supported")
 	}
 
 	user, pass, ok := parseProxyAuth(req.Header.Get("Proxy-Authorization"))
 	if !ok || !check(user, pass) {
 		_ = writeHTTPStatus(w, http.StatusProxyAuthRequired, "Proxy-Authenticate: Basic realm=\"domicile\"\r\n")
-		return wire.Open{}, errHTTPAuth
+		return wire.Open{}, nil, errHTTPAuth
 	}
 
-	dst, err := parseAuthority(req.Host)
+	authority := req.Host
+	if forward {
+		authority = req.URL.Host
+		if req.URL.Port() == "" {
+			authority = net.JoinHostPort(req.URL.Hostname(), "80")
+		}
+	}
+	dst, err := parseAuthority(authority)
 	if err != nil {
 		_ = writeHTTPStatus(w, http.StatusBadRequest, "")
-		return wire.Open{}, fmt.Errorf("http connect: %w", err)
+		return wire.Open{}, nil, fmt.Errorf("http connect: %w", err)
 	}
-	return dst, nil
+	if !forward {
+		return dst, nil, nil
+	}
+	return dst, req, nil
+}
+
+// forwardRequest sends one plain-HTTP request to st, rewritten to origin
+// form, with the proxy's own headers removed. Connection: close keeps it to
+// one request per connection, so a client cannot steer a later request on
+// the same connection to a different host than the one routed.
+func forwardRequest(st io.Writer, req *http.Request) error {
+	req.Header.Del("Proxy-Authorization")
+	req.Header.Del("Proxy-Connection")
+	req.RequestURI = ""
+	req.Close = true
+	return req.Write(st)
 }
 
 // parseProxyAuth decodes a "Basic base64(user:pass)" header value.

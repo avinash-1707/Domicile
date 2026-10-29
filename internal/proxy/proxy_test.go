@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -304,6 +306,34 @@ func TestProxyRequiresCredentials(t *testing.T) {
 
 	if strings.Contains(e.logs.String(), proxyPass) || strings.Contains(e.logs.String(), "wrong") {
 		t.Fatalf("logs contain a password:\n%s", e.logs.String())
+	}
+}
+
+func TestPlainHTTPThroughExit(t *testing.T) {
+	e := newEnv(t, true)
+	got := make(chan http.Header, 1)
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Header.Clone()
+		io.WriteString(w, "hello over plain http")
+	}))
+	defer site.Close()
+
+	proxyURL, _ := url.Parse("http://" + proxyUser + ":" + proxyPass + "@" + e.proxyAddr)
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 5 * time.Second}
+	resp, err := client.Get(site.URL + "/page")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || string(body) != "hello over plain http" {
+		t.Fatalf("status %d body %q", resp.StatusCode, body)
+	}
+	if h := <-got; h.Get("Proxy-Authorization") != "" {
+		t.Fatal("the site received the proxy credentials")
+	}
+	if !strings.Contains(e.logs.String(), "proto=http-forward") {
+		t.Fatalf("forwarded request not logged:\n%s", e.logs.String())
 	}
 }
 

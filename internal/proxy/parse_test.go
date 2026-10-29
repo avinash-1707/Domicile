@@ -111,7 +111,9 @@ func TestHTTPConnectHandshake(t *testing.T) {
 		{"ipv6", connectReq("[2001:db8::1]:443", "agent:pw"), wire.Open{Host: "2001:db8::1", Port: 443}, ""},
 		{"no credentials", connectReq("reddit.com:443", ""), wire.Open{}, "407"},
 		{"wrong password", connectReq("reddit.com:443", "agent:nope"), wire.Open{}, "407"},
-		{"plain GET", "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n", wire.Open{}, "405"},
+		{"plain GET without credentials", "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n", wire.Open{}, "407"},
+		{"absolute https is not a proxy request", "GET https://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n", wire.Open{}, "400"},
+		{"origin-form request", "GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n", wire.Open{}, "400"},
 		{"missing port", connectReq("reddit.com", "agent:pw"), wire.Open{}, "400"},
 		{"port zero", connectReq("reddit.com:0", "agent:pw"), wire.Open{}, "400"},
 		{"port too big", connectReq("reddit.com:70000", "agent:pw"), wire.Open{}, "400"},
@@ -120,7 +122,7 @@ func TestHTTPConnectHandshake(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out bytes.Buffer
-			got, err := httpConnectHandshake(bufio.NewReader(strings.NewReader(tt.in)), &out, allow)
+			got, _, err := httpConnectHandshake(bufio.NewReader(strings.NewReader(tt.in)), &out, allow)
 			if tt.wantStatus == "" {
 				if err != nil {
 					t.Fatal(err)
@@ -146,9 +148,32 @@ func TestHTTPConnectHandshake(t *testing.T) {
 	}
 }
 
+func TestPlainHTTPRequestForForwarding(t *testing.T) {
+	auth := base64.StdEncoding.EncodeToString([]byte("agent:pw"))
+	in := "GET http://example.com/a?b=1 HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: Basic " + auth + "\r\nProxy-Connection: keep-alive\r\n\r\n"
+	dst, req, err := httpConnectHandshake(bufio.NewReader(strings.NewReader(in)), &bytes.Buffer{}, allow)
+	if err != nil || req == nil || dst != (wire.Open{Host: "example.com", Port: 80}) {
+		t.Fatalf("got %+v, %v, %v", dst, req, err)
+	}
+	var out bytes.Buffer
+	if err := forwardRequest(&out, req); err != nil {
+		t.Fatal(err)
+	}
+	sent := out.String()
+	if !strings.HasPrefix(sent, "GET /a?b=1 HTTP/1.1\r\n") {
+		t.Fatalf("request line not rewritten to origin form: %q", sent)
+	}
+	if strings.Contains(sent, "Proxy-") || strings.Contains(sent, auth) {
+		t.Fatalf("proxy credentials forwarded to the site: %q", sent)
+	}
+	if !strings.Contains(sent, "Connection: close") {
+		t.Fatalf("not one request per connection: %q", sent)
+	}
+}
+
 func TestHTTPConnectPasswordWithColon(t *testing.T) {
 	check := func(user, pass string) bool { return user == "agent" && pass == "p:w" }
-	got, err := httpConnectHandshake(bufio.NewReader(strings.NewReader(connectReq("a.com:443", "agent:p:w"))), &bytes.Buffer{}, check)
+	got, _, err := httpConnectHandshake(bufio.NewReader(strings.NewReader(connectReq("a.com:443", "agent:p:w"))), &bytes.Buffer{}, check)
 	if err != nil || got.Host != "a.com" {
 		t.Fatalf("password containing ':' was not kept whole: %+v, %v", got, err)
 	}
@@ -160,7 +185,7 @@ func TestHTTPConnectErrorsDoNotQuoteInput(t *testing.T) {
 		"CONNECT a.com:443 HTTP/1.1\r\nProxy-Authorization: Basic " + secret + "\x00\r\n\r\n",
 		"CONNECT /secret-path?token=" + secret + " HTTP/1.1\r\nProxy-Authorization: Basic " + secret + "\r\n\r\n",
 	} {
-		_, err := httpConnectHandshake(bufio.NewReader(strings.NewReader(in)), &bytes.Buffer{}, allow)
+		_, _, err := httpConnectHandshake(bufio.NewReader(strings.NewReader(in)), &bytes.Buffer{}, allow)
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -172,7 +197,7 @@ func TestHTTPConnectErrorsDoNotQuoteInput(t *testing.T) {
 
 func TestHTTPConnectKeepsEarlyData(t *testing.T) {
 	br := bufio.NewReader(strings.NewReader(connectReq("a.com:443", "agent:pw") + "EARLY"))
-	if _, err := httpConnectHandshake(br, &bytes.Buffer{}, allow); err != nil {
+	if _, _, err := httpConnectHandshake(br, &bytes.Buffer{}, allow); err != nil {
 		t.Fatal(err)
 	}
 	rest := make([]byte, 5)

@@ -23,7 +23,13 @@ type Live struct {
 
 	mu  sync.Mutex // serialises Reload
 	sum [sha256.Size]byte
+
+	lastMiss atomic.Int64 // unix nanos of the last miss-triggered reload
 }
+
+// missReloadEvery bounds re-reads triggered by failed logins, so a stream of
+// wrong passwords cannot make the server hammer the disk.
+const missReloadEvery = 250 * time.Millisecond
 
 // OpenLive loads path and returns a view of it.
 func OpenLive(path string) (*Live, error) {
@@ -79,8 +85,26 @@ func (l *Live) ExitCredential(name string) (string, bool) {
 }
 
 // CheckUser reports whether user/pass is a valid proxy login. Unknown
-// users are compared too, so timing does not reveal which exist.
+// users are compared too, so timing does not reveal which exist. On a miss it
+// re-reads the state once before refusing: a credential the CLI wrote a
+// moment ago (`run`, `connect`, `user add`) must work on its first use, not
+// after the next periodic reload.
 func (l *Live) CheckUser(user, pass string) bool {
+	if l.checkUser(user, pass) {
+		return true
+	}
+	now := time.Now().UnixNano()
+	last := l.lastMiss.Load()
+	if now-last < int64(missReloadEvery) || !l.lastMiss.CompareAndSwap(last, now) {
+		return false
+	}
+	if err := l.Reload(); err != nil {
+		return false
+	}
+	return l.checkUser(user, pass)
+}
+
+func (l *Live) checkUser(user, pass string) bool {
 	u, ok := l.cur.Load().Users[user]
 	return secret.MatchesDigest(pass, u.PasswordSHA256) && ok && u.PasswordSHA256 != ""
 }
