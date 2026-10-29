@@ -293,7 +293,11 @@ func (cl Client) request(ctx context.Context, req request) (*net.UnixConn, *bufi
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot reach the server at %s (is `domicile server` running?): %w", cl.Path, err)
 	}
-	uc := c.(*net.UnixConn)
+	uc, ok := c.(*net.UnixConn)
+	if !ok {
+		c.Close()
+		return nil, nil, fmt.Errorf("dial %s: got %T, want *net.UnixConn", cl.Path, c)
+	}
 	if dl, ok := ctx.Deadline(); ok {
 		_ = uc.SetDeadline(dl)
 	}

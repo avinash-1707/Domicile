@@ -109,7 +109,7 @@ func connect(ctx context.Context, t transport) (l tunnel.Listener, server, exit 
 	ch := make(chan accepted, 1)
 	go func() {
 		s, err := l.Accept(ctx)
-		ch <- accepted{s, err}
+		ch <- accepted{s: s, err: err}
 	}()
 
 	exit, err = t.dial(ctx, l.Addr().String(), certs.PinnedClientConfig(pin, tunnel.ALPN))

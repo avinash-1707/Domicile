@@ -97,6 +97,9 @@ func New(cfg Config) *Server {
 // Serve accepts exit sessions from l until ctx is cancelled or l fails. On
 // return every exit session is closed. It returns nil on cancellation.
 func (s *Server) Serve(ctx context.Context, l tunnel.Listener) error {
+	// Deferred first so it runs after closeAll, which ends every admit.
+	var admits sync.WaitGroup
+	defer admits.Wait()
 	defer s.closeAll()
 	for {
 		sess, err := l.Accept(ctx)
@@ -112,7 +115,7 @@ func (s *Server) Serve(ctx context.Context, l tunnel.Listener) error {
 			sess.Close()
 			continue
 		}
-		go s.admit(ctx, sess, ip)
+		admits.Go(func() { s.admit(ctx, sess, ip) })
 	}
 }
 
