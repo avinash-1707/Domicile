@@ -16,22 +16,6 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/avinash-1707/Domicile" alt="License: Apache-2.0"></a>
 </p>
 
-- [Why](#why)
-- [Install](#install)
-- [Quick start](#quick-start)
-- [Connect your agent's tools](#connect-your-agents-tools)
-- [Rules](#rules)
-- [Check the exit](#check-the-exit)
-- [Run as a service](#run-as-a-service)
-- [Commands](#commands)
-- [Files and exit codes](#files-and-exit-codes)
-- [How it works](#how-it-works)
-- [Security](#security)
-- [Who this is for](#who-this-is-for)
-- [Limitations](#limitations)
-- [Building from source](#building-from-source)
-- [License](#license)
-
 ## Why
 
 Agents that run around the clock on a VPS browse from a datacenter IP. Many sites score the IP's network before they look at the browser, so a script that works on your laptop gets CAPTCHAs, 403s or refused logins from the VPS. Patching the browser fingerprint does not help when the decision is made at the network layer.
@@ -43,9 +27,39 @@ agent browser → domicile on the VPS → rule matches? → tunnel → your home
                                     → no match      → direct from the VPS
 ```
 
+## How it works
+
+The home agent opens a QUIC connection to the VPS and pins the server's certificate fingerprint from the join code. On the VPS, a local proxy port speaks SOCKS5 and HTTP CONNECT and also forwards plain HTTP. It is bound to `127.0.0.1` and requires a credential. Each connection's destination is matched against your rules. A matched connection becomes a stream on the tunnel, and the home agent resolves the name and connects to the site, so DNS for routed domains is resolved at home too. Unmatched connections are dialled directly from the VPS.
+
+domicile does not intercept TLS. It sees the hostnames you connect to and never the page content.
+
+## Who this is for
+
+domicile is free for solo developers who already have a device on a residential connection. It does not create IPs.
+
+It works well when your agent uses your own accounts at low volume (reading pages, logging in, scheduled checks) and one stable IP is enough. A personal home IP is often cleaner than a shared proxy pool.
+
+You still need a paid proxy for rotating IPs, high volume or IPs in countries where you have no device, or if you have no residential connection. domicile will not add rotation or pooling.
+
+## Limitations
+
+- A residential IP fixes IP reputation only. Browser fingerprint, TLS fingerprint, behavior and per-account rate limits are separate problems.
+- Your home IP becomes associated with your agent's activity.
+- Results depend on your ISP and your IP's history.
+- Hosted cloud browsers (Browser Use Cloud, Browserbase and similar) are not supported in v1.
+- Windows is not supported.
+
+Use your own connection for your own agents. domicile is not meant for large-scale scraping, account creation or getting around a platform's rules.
+
+## Requirements
+
+- A VPS running Linux or macOS, where your agent runs. Exits reach it on UDP port 443 by default, so open that port in its firewall or security group.
+- A device at home running Linux or macOS that stays on, such as a Raspberry Pi or an old laptop. It dials out, so you open no ports at home.
+- Both machines on amd64 or arm64.
+
 ## Install
 
-domicile runs on Linux and macOS, amd64 and arm64. Install it on both the VPS and the home device:
+Run this on both the VPS and the home device:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/avinash-1707/domicile/main/install.sh | sh
@@ -68,9 +82,9 @@ domicile follows semantic versioning. Before 1.0, a minor release may change fla
 
 ## Quick start
 
-The VPS needs UDP port 443 reachable from the internet. The home device needs no open ports, because it dials out.
+### 1. Set up the VPS
 
-On the VPS, create the server state, pair a device, add a rule and start the server:
+Create the server state, pair a device, add a rule and start the server:
 
 ```sh
 domicile init -public-addr vps.example.com:443   # prints your proxy URL and password, once
@@ -79,7 +93,9 @@ domicile rule add reddit.com -via home
 domicile server
 ```
 
-On the home device, paste the join code that `add` printed:
+### 2. Pair the home device
+
+Paste the join code that `add` printed:
 
 ```sh
 domicile agent join dj1.…
@@ -91,6 +107,8 @@ You can also install and pair in one step. The script then offers to set the age
 curl -fsSL https://raw.githubusercontent.com/avinash-1707/domicile/main/install.sh | sh -s -- join dj1.…
 ```
 
+### 3. Check the exit
+
 Back on the VPS, confirm the device is connected and see what sites see through it:
 
 ```sh
@@ -98,7 +116,22 @@ domicile status
 domicile verify
 ```
 
-Your agent can now use the proxy URL `init` printed (`socks5h://agent:…@127.0.0.1:1080`, or the same with `http://`). Requests to reddit.com leave through your home connection, and everything else leaves from the VPS.
+### 4. Point your agent at the proxy
+
+Use the proxy URL `init` printed (`socks5h://agent:…@127.0.0.1:1080`, or the same with `http://`), or let `domicile connect` configure your tools (see below). Requests to reddit.com now leave through your home connection, and everything else leaves from the VPS.
+
+## Run as a service
+
+To keep both sides running across reboots, install them as services:
+
+```sh
+sudo domicile service install server     # on the VPS
+domicile service install agent           # on the home device (sudo on Linux)
+```
+
+On Linux this writes a hardened systemd unit that runs domicile as your user, never as root. Only the server gets an extra permission, the one it needs to bind port 443. On macOS it writes a launchd agent in `~/Library/LaunchAgents`.
+
+`-print` shows the unit and the commands without changing anything, and `domicile service uninstall server|agent` removes it. If the server revokes a device, the agent stops instead of retrying in a loop.
 
 ## Connect your agent's tools
 
@@ -137,7 +170,7 @@ When the exit is offline, matched traffic is refused by default so it never leav
 
 Rules live in `domicile.json` in the state directory. A running server picks up changes within a second. If the file becomes unreadable or names an exit that does not exist, the server keeps the last good rules and `status` shows the error.
 
-## Check the exit
+## Checking the exit
 
 Run `domicile verify` on the VPS while the server is running. For each exit it reports:
 
@@ -151,20 +184,17 @@ It prints a table, or JSON with `-json`. `-exit <name>` checks one exit. It exit
 
 `domicile status` shows the connected exits, the server's addresses and fingerprint, and the active rules, also with `-json`.
 
-## Run as a service
+## Security
 
-To keep either side running across reboots, install it as a service:
+- The home agent refuses to connect to private, loopback, link-local and cloud-metadata addresses, so an agent on the VPS cannot reach your router or other devices on your LAN. The check runs on the resolved address, so DNS tricks do not get around it. It also covers the device's own networks (including IPv6 global addresses) and your public address, which on many connections is the router itself. `domicile agent -allow 192.168.1.50` opens a specific address if you want one reachable.
+- The proxy listens on loopback only and every client needs a credential. Each connected tool gets its own, so you can revoke one without touching the others.
+- Join codes work once and expire. domicile generates every secret itself and stores only their hashes.
+- Agents get read-only tools. Only you can add rules.
+- `domicile remove <exit>` revokes a device, and the server disconnects it within a second.
 
-```sh
-sudo domicile service install server     # on the VPS
-domicile service install agent           # on the home device (sudo on Linux)
-```
+## Reference
 
-On Linux this writes a hardened systemd unit that runs domicile as your user, never as root. Only the server gets an extra permission, the one it needs to bind port 443. On macOS it writes a launchd agent in `~/Library/LaunchAgents`.
-
-`-print` shows the unit and the commands without changing anything, and `domicile service uninstall server|agent` removes it. If the server revokes a device, the agent stops instead of retrying in a loop.
-
-## Commands
+### Commands
 
 | Command | Where | Description |
 |---|---|---|
@@ -186,7 +216,7 @@ On Linux this writes a hardened systemd unit that runs domicile as your user, ne
 
 Run `domicile <command> -h` for a command's flags.
 
-## Files and exit codes
+### Files
 
 Everything lives in the state directory, `~/.local/state/domicile` by default (`$XDG_STATE_HOME/domicile` when that is set). Every command takes `-state-dir` to use another one.
 
@@ -198,44 +228,15 @@ Everything lives in the state directory, `~/.local/state/domicile` by default (`
 | `control.sock` | VPS | Local socket that `status`, `verify` and `mcp` talk to |
 | `agent.json` | Home | This device's credential and the server's fingerprint |
 
-| Exit code | Meaning |
+### Exit codes
+
+| Code | Meaning |
 |---|---|
 | 0 | Success |
 | 1 | Error, or a `verify` check failed |
 | 2 | Bad command or flags |
 | 3 | `verify` could not run |
 | 4 | The agent's credential was revoked or its join code was already used |
-
-## How it works
-
-The home agent opens a QUIC connection to the VPS and pins the server's certificate fingerprint from the join code. On the VPS, the local proxy port speaks SOCKS5 and HTTP CONNECT and also forwards plain HTTP. It is bound to `127.0.0.1` and requires a credential. Each connection's destination is matched against the rules. A matched connection becomes a stream on the tunnel, and the home agent resolves the name and connects to the site, so DNS for routed domains is resolved at home too. Unmatched connections are dialled directly from the VPS.
-
-domicile does not intercept TLS. It sees the hostnames you connect to and never the page content.
-
-## Security
-
-- The home agent refuses to connect to private, loopback, link-local and cloud-metadata addresses, so an agent on the VPS cannot reach your router or other devices on your LAN. The check runs on the resolved address, so DNS tricks do not get around it. It also covers the device's own networks (including IPv6 global addresses) and your public address, which on many connections is the router itself. `domicile agent -allow 192.168.1.50` opens a specific address if you want one reachable.
-- The proxy listens on loopback only and every client needs a credential. Each connected tool gets its own, so you can revoke one without touching the others.
-- Join codes work once and expire. domicile generates every secret itself and stores only their hashes.
-- Agents get read-only tools. Only you can add rules.
-
-## Who this is for
-
-domicile is free for solo developers who already have a device on a residential connection. It does not create IPs.
-
-It works well when your agent uses your own accounts at low volume (reading pages, logging in, scheduled checks) and one stable IP is enough. A personal home IP is often cleaner than a shared proxy pool.
-
-You still need a paid proxy for rotating IPs, high volume or IPs in countries where you have no device, or if you have no residential connection. domicile will not add rotation or pooling.
-
-## Limitations
-
-- A residential IP fixes IP reputation only. Browser fingerprint, TLS fingerprint, behavior and per-account rate limits are separate problems.
-- Your home IP becomes associated with your agent's activity.
-- Results depend on your ISP and your IP's history.
-- Hosted cloud browsers (Browser Use Cloud, Browserbase and similar) are not supported in v1.
-- Windows is not supported.
-
-Use your own connection for your own agents. domicile is not meant for large-scale scraping, account creation or getting around a platform's rules.
 
 ## Building from source
 
