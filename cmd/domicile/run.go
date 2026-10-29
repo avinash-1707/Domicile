@@ -170,7 +170,7 @@ func runMCP(ctx context.Context, args []string, in io.Reader, out io.Writer) err
 	}
 	verifyOnce := &verifyCache{}
 
-	srv := &mcp.Server{Name: "domicile", Version: "dev", Handlers: map[string]mcp.Handler{
+	srv := &mcp.Server{Name: "domicile", Version: version, Handlers: map[string]mcp.Handler{
 		"exit_status": func(ctx context.Context, _ json.RawMessage) (any, error) {
 			ctx, cancel := call(10 * time.Second)
 			defer cancel()

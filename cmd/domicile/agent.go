@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/avinash-1707/domicile/internal/certs"
@@ -31,6 +32,7 @@ func runAgent(ctx context.Context, args []string, log *slog.Logger) error {
 	}
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	stateDir := fs.String("state-dir", defaultStateDir(), "directory for this device's pairing")
+	pairOnly := fs.Bool("pair-only", false, "with join: pair, save the credential and exit without running (for installing a service next)")
 	allowList := fs.String("allow", "", "comma-separated IPs or CIDRs on the local network the exit may reach (default: none; the LAN, loopback and cloud metadata are refused)")
 	path := func() string { return filepath.Join(*stateDir, agentFile) }
 
@@ -55,7 +57,18 @@ func runAgent(ctx context.Context, args []string, log *slog.Logger) error {
 		}
 		defer unlock()
 		if a, err = pair(ctx, code, path(), log); err != nil {
+			if errors.Is(err, exit.ErrJoinRejected) {
+				return revoked{err}
+			}
 			return err
+		}
+		if *pairOnly {
+			install := "sudo domicile service install agent"
+			if runtime.GOOS == "darwin" {
+				install = "domicile service install agent"
+			}
+			fmt.Fprintf(os.Stderr, "Paired. Start the exit with `domicile agent`, or install it as a service with `%s`.\n", install)
+			return nil
 		}
 	} else {
 		if err := parseFlags(fs, args); err != nil {
@@ -90,10 +103,16 @@ func runAgent(ctx context.Context, args []string, log *slog.Logger) error {
 		Logger:     log,
 	})
 	if errors.Is(err, exit.ErrUnauthorized) {
-		return fmt.Errorf("%w: this exit was removed or re-paired on the server; pair again with a new code from `domicile add %s`", err, a.Name)
+		return revoked{fmt.Errorf("%w: this exit was removed or re-paired on the server; pair again with a new code from `domicile add %s`", err, a.Name)}
 	}
 	return err
 }
+
+// revoked exits with exitRevoked, which service managers do not restart on.
+type revoked struct{ err error }
+
+func (r revoked) Error() string { return r.err.Error() }
+func (r revoked) Unwrap() error { return r.err }
 
 // pair exchanges a join code's one-time token for a credential and saves it.
 func pair(ctx context.Context, code, path string, log *slog.Logger) (state.Agent, error) {

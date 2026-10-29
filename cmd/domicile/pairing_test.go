@@ -2,11 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/avinash-1707/domicile/internal/rules"
 	"github.com/avinash-1707/domicile/internal/state"
@@ -192,5 +197,72 @@ func TestPrintableStripsControlCharacters(t *testing.T) {
 	}
 	if got != "Jio[1A[2KPASS ok" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// TestAgentPairOnlyAndRevoked runs a real server and checks the outcomes
+// service managers act on: -pair-only returns after pairing, and a spent
+// join code or a removed exit is reported as revoked (exit 4, no restart).
+func TestAgentPairOnlyAndRevoked(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := pc.LocalAddr().String()
+	pc.Close()
+	srvDir := filepath.Join(t.TempDir(), "srv")
+	if err := runInit([]string{"-state-dir", srvDir, "-public-addr", addr}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	sockDir, err := os.MkdirTemp("", "dom") // unix socket paths are short on macOS
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	log := slog.New(slog.DiscardHandler)
+	done := make(chan error, 1)
+	go func() {
+		done <- runServer(ctx, []string{"-state-dir", srvDir, "-listen", addr, "-proxy", "127.0.0.1:0", "-control", filepath.Join(sockDir, "c.sock")}, log)
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+
+	var out bytes.Buffer
+	if err := runAdd([]string{"home", "-state-dir", srvDir}, &out); err != nil {
+		t.Fatal(err)
+	}
+	code := regexp.MustCompile(`dj1\.[A-Za-z0-9_-]+`).FindString(out.String())
+	join := func(dir string) error {
+		return runAgent(ctx, []string{"join", "-pair-only", "-state-dir", dir, code}, log)
+	}
+
+	agentDir := filepath.Join(t.TempDir(), "agent")
+	// The server may still be starting; a failed dial does not spend the code.
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if err = join(agentDir); err == nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("pair-only join: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(agentDir, agentFile)); err != nil {
+		t.Fatalf("pair-only did not save the credential: %v", err)
+	}
+
+	var rv revoked
+	if err := join(filepath.Join(t.TempDir(), "again")); !errors.As(err, &rv) {
+		t.Fatalf("reusing a spent join code: err = %v, want revoked", err)
+	}
+
+	if err := runRemove([]string{"home", "-state-dir", srvDir}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, stop := context.WithTimeout(ctx, 10*time.Second)
+	defer stop()
+	if err := runAgent(runCtx, []string{"-state-dir", agentDir}, log); !errors.As(err, &rv) {
+		t.Fatalf("removed exit: err = %v, want revoked", err)
 	}
 }

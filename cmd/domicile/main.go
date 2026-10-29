@@ -29,6 +29,9 @@ Usage:
                                             point a tool at the proxy
   domicile run -- <command>                 run a command with the proxy in its environment
   domicile mcp                              read-only tools for AI agents, over stdio
+  domicile service install|uninstall server|agent
+                                            run domicile under systemd (Linux) or launchd (macOS)
+  domicile version
   domicile rule add <domain> -via <exit> [flags]
   domicile rule remove <domain> [-exact]
   domicile rule list
@@ -39,6 +42,9 @@ Usage:
 
 Run "domicile <command> -h" for a command's flags.
 `
+
+// version is set at build time: -ldflags "-X main.version=v1.2.3".
+var version = "dev"
 
 // errUsage marks errors already explained by a flag set's usage output.
 var errUsage = errors.New("usage")
@@ -60,6 +66,11 @@ func main() {
 		err = runAgent(ctx, args, log)
 	case "rule":
 		err = runRule(args, os.Stdout)
+	case "service":
+		err = runService(args, os.Stdin, os.Stdout)
+	case "version", "-version", "--version":
+		fmt.Println("domicile", version)
+		return
 	case "connect":
 		err = runConnect(args, os.Stdout)
 	case "run":
@@ -98,6 +109,16 @@ func main() {
 	var code exitCode
 	if errors.As(err, &code) {
 		os.Exit(int(code))
+	}
+	var rv revoked
+	if errors.As(err, &rv) {
+		log.Error("exiting", "err", rv.err)
+		// launchd cannot skip one exit status: KeepAlive restarts on any
+		// failure. Under our launchd job a revoked agent exits 0 to stay down.
+		if os.Getenv("XPC_SERVICE_NAME") == launchdLabel("agent") {
+			os.Exit(0)
+		}
+		os.Exit(exitRevoked)
 	}
 	var vf verifyFailed
 	if errors.As(err, &vf) {
