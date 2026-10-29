@@ -23,6 +23,7 @@ import (
 	"github.com/avinash-1707/domicile/internal/secret"
 	"github.com/avinash-1707/domicile/internal/state"
 	"github.com/avinash-1707/domicile/internal/verify"
+	"golang.org/x/sys/unix"
 )
 
 // toolRun is the proxy user `domicile run` uses. Its password is kept in a
@@ -63,7 +64,19 @@ func runRun(ctx context.Context, args []string, out io.Writer) error {
 	cmd.Env = proxyEnv(os.Environ(), *proxyAddr, password)
 	// main turns SIGINT/SIGTERM into ctx cancellation; pass SIGTERM on and
 	// give the child time to clean up instead of killing it outright.
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	// Without a terminal (systemd, Docker, scripts) the command gets its own
+	// process group and the signal goes to the whole group, so background
+	// jobs it started are not orphaned. With a terminal it stays in the
+	// terminal's group: a separate group would be stopped by the kernel when
+	// it reads, writes or configures the terminal, and Ctrl-C already
+	// reaches every process in it. After WaitDelay only the leader is
+	// killed; a background job that ignores SIGTERM outlives the run.
+	if !isTerminal(os.Stdin) && !isTerminal(os.Stdout) && !isTerminal(os.Stderr) {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
+	} else {
+		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	}
 	cmd.WaitDelay = 10 * time.Second
 	err = cmd.Run()
 	var ee *exec.ExitError
@@ -74,6 +87,13 @@ func runRun(ctx context.Context, args []string, out io.Writer) error {
 		return exitCode(ee.ExitCode())
 	}
 	return err
+}
+
+// isTerminal reports whether f is a terminal. A character-device check is
+// not enough: /dev/null, a service's usual stdin, is one too.
+func isTerminal(f *os.File) bool {
+	_, err := unix.IoctlGetTermios(int(f.Fd()), ioctlGetTermios)
+	return err == nil
 }
 
 // proxyEnv replaces any proxy settings in env with domicile's.

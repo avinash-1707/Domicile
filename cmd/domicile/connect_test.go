@@ -5,10 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/avinash-1707/domicile/internal/control"
 	"github.com/avinash-1707/domicile/internal/rules"
@@ -327,5 +331,48 @@ func TestBlockedHostSuggestions(t *testing.T) {
 	}
 	if !strings.Contains(got["old.reddit.com"].Suggest, "already routed") {
 		t.Fatalf("a host already covered by a rule was suggested again: %+v", got["old.reddit.com"])
+	}
+}
+
+func TestIsTerminal(t *testing.T) {
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer null.Close()
+	if isTerminal(null) {
+		t.Fatal("/dev/null counted as a terminal")
+	}
+}
+
+func TestRunSignalReachesBackgroundJobs(t *testing.T) {
+	// Without a terminal, SIGTERM must reach the whole process group, so a
+	// background job the command started is not left running.
+	if isTerminal(os.Stdin) {
+		t.Skip("stdin is a terminal")
+	}
+	dir := initState(t)
+	marker := filepath.Join(t.TempDir(), "pid")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- runRun(ctx, []string{"-state-dir", dir, "--", "sh", "-c", "sleep 30 & echo $! > " + marker + "; wait"}, io.Discard)
+	}()
+	var pid int
+	for i := 0; i < 100 && pid == 0; i++ {
+		time.Sleep(20 * time.Millisecond)
+		if data, err := os.ReadFile(marker); err == nil {
+			pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		}
+	}
+	if pid == 0 {
+		t.Fatal("background job did not start")
+	}
+	cancel()
+	<-done
+	time.Sleep(100 * time.Millisecond)
+	if err := syscall.Kill(pid, 0); err == nil {
+		syscall.Kill(pid, syscall.SIGKILL)
+		t.Fatal("background job survived the signal")
 	}
 }
