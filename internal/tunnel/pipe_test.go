@@ -114,6 +114,9 @@ func TestPipeHalfClosesBothWays(t *testing.T) {
 
 func TestPipeAbortReachesStreamPeer(t *testing.T) {
 	addr := tcpServer(t, func(c *net.TCPConn) {
+		// Resetting at once can race the client's own connect on some
+		// kernels and fail the dial instead of the transfer under test.
+		time.Sleep(50 * time.Millisecond)
 		c.Write([]byte("partial"))
 		c.SetLinger(0)
 		c.Close() // RST: the destination died mid-response
