@@ -48,10 +48,13 @@ Run "domicile <command> -h" for a command's flags.
 // -ldflags "-X main.version=v1.2.3". It must stay a plain string for -X.
 var version = "dev"
 
-func init() {
+// buildVersion is version, falling back to the module version for builds the
+// release ldflags never reach.
+func buildVersion() string {
 	if version == "dev" {
-		version = moduleVersion(debug.ReadBuildInfo())
+		return moduleVersion(debug.ReadBuildInfo())
 	}
+	return version
 }
 
 // moduleVersion is the version Go records for `go install module@v1.2.3`
@@ -67,9 +70,14 @@ func moduleVersion(bi *debug.BuildInfo, ok bool) string {
 var errUsage = errors.New("usage")
 
 func main() {
+	os.Exit(run())
+}
+
+// run is main's body, returning the process exit status so main exits once.
+func run() int {
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+		return 2
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -86,8 +94,8 @@ func main() {
 	case "service":
 		err = runService(args, os.Stdin, os.Stdout)
 	case "version", "-version", "--version":
-		fmt.Println("domicile", version)
-		return
+		fmt.Println("domicile", buildVersion())
+		return 0
 	case "connect":
 		err = runConnect(args, os.Stdout)
 	case "run":
@@ -108,24 +116,24 @@ func main() {
 		err = runUser(args, os.Stdout)
 	case "-h", "-help", "--help", "help":
 		fmt.Print(usage)
-		return
+		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "domicile: unknown command %q\n\n%s", cmd, usage)
-		os.Exit(2)
+		return 2
 	}
 
 	if errors.Is(err, flag.ErrHelp) {
-		return
+		return 0
 	}
 	if errors.Is(err, errUsage) {
-		os.Exit(2)
+		return 2
 	}
 	if errors.Is(err, errChecksFailed) {
-		os.Exit(1)
+		return 1
 	}
 	var code exitCode
 	if errors.As(err, &code) {
-		os.Exit(int(code))
+		return int(code)
 	}
 	var rv revoked
 	if errors.As(err, &rv) {
@@ -133,19 +141,20 @@ func main() {
 		// launchd cannot skip one exit status: KeepAlive restarts on any
 		// failure. Under our launchd job a revoked agent exits 0 to stay down.
 		if os.Getenv("XPC_SERVICE_NAME") == launchdLabel("agent") {
-			os.Exit(0)
+			return 0
 		}
-		os.Exit(exitRevoked)
+		return exitRevoked
 	}
 	var vf verifyFailed
 	if errors.As(err, &vf) {
 		log.Error("verify could not run", "err", vf.err)
-		os.Exit(3)
+		return 3
 	}
 	if err != nil {
 		log.Error("exiting", "err", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 // parseFlags runs fs.Parse and rejects stray positional arguments.
