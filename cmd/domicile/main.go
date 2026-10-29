@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 )
 
@@ -43,8 +44,24 @@ Usage:
 Run "domicile <command> -h" for a command's flags.
 `
 
-// version is set at build time: -ldflags "-X main.version=v1.2.3".
+// version is set at build time by the release workflow:
+// -ldflags "-X main.version=v1.2.3". It must stay a plain string for -X.
 var version = "dev"
+
+func init() {
+	if version == "dev" {
+		version = moduleVersion(debug.ReadBuildInfo())
+	}
+}
+
+// moduleVersion is the version Go records for `go install module@v1.2.3`
+// builds, which the release ldflags never reach.
+func moduleVersion(bi *debug.BuildInfo, ok bool) string {
+	if ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return "dev"
+}
 
 // errUsage marks errors already explained by a flag set's usage output.
 var errUsage = errors.New("usage")
