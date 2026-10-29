@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -80,6 +81,8 @@ func newEnv(t *testing.T, withExit bool) *env {
 			exit.Run(ctx, exit.Config{
 				Name:       "home",
 				Credential: "exit-token",
+				// The test destinations are loopback servers.
+				Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")},
 				Dial: func(ctx context.Context) (tunnel.Session, error) {
 					return quictun.Dial(ctx, l.Addr().String(), certs.PinnedClientConfig(pin, tunnel.ALPN), quictun.Config{})
 				},
