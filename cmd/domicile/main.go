@@ -25,7 +25,7 @@ Usage:
   domicile user add|remove|list             manage proxy users
   domicile server [flags]                   run the VPS side
   domicile status [-json]                   show exits, connections and active rules
-  domicile verify [-exit name] [-json]      check what sites see through each exit
+  domicile verify [-exit name] [-json]      health-check each exit: what sites see through it
   domicile connect playwright-mcp|agent-browser|shell [-undo]
                                             point a tool at the proxy
   domicile run -- <command>                 run a command with the proxy in its environment
@@ -130,6 +130,9 @@ func run() int {
 	}
 	if errors.Is(err, errChecksFailed) {
 		return 1
+	}
+	if errors.Is(err, errInconclusive) {
+		return 5
 	}
 	var code exitCode
 	if errors.As(err, &code) {

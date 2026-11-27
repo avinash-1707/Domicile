@@ -21,6 +21,10 @@ import (
 // could not run and exits 3, so scripts can tell the two apart.
 var errChecksFailed = errors.New("verify: checks failed")
 
+// errInconclusive makes `domicile verify` exit 5: nothing failed, but the
+// exit IP or DNS check could not be measured, which is not a pass.
+var errInconclusive = errors.New("verify: inconclusive")
+
 // verifyFailed marks an error from verify that is not a check failure.
 type verifyFailed struct{ err error }
 
@@ -30,7 +34,7 @@ func (e verifyFailed) Unwrap() error { return e.err }
 func runVerify(ctx context.Context, args []string, out io.Writer) error {
 	asJSON := false
 	err := verifyCmd(ctx, args, out, &asJSON)
-	if err == nil || errors.Is(err, errChecksFailed) || errors.Is(err, flag.ErrHelp) || errors.Is(err, errUsage) {
+	if err == nil || errors.Is(err, errChecksFailed) || errors.Is(err, errInconclusive) || errors.Is(err, flag.ErrHelp) || errors.Is(err, errUsage) {
 		return err
 	}
 	if asJSON {
@@ -45,7 +49,7 @@ func verifyCmd(ctx context.Context, args []string, out io.Writer, jsonOut *bool)
 	stateDir := fs.String("state-dir", defaultStateDir(), "directory for server state")
 	controlPath := fs.String("control", "", "control socket of the running server (default <state-dir>/control.sock)")
 	only := fs.String("exit", "", "check only this exit")
-	asJSON := fs.Bool("json", false, "print the report as JSON (exit 0 all pass, 1 a check failed, 3 verify could not run)")
+	asJSON := fs.Bool("json", false, "print the report as JSON (exit 0 all pass, 1 a check failed, 3 verify could not run, 5 inconclusive)")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
@@ -74,10 +78,15 @@ func verifyCmd(ctx context.Context, args []string, out io.Writer, jsonOut *bool)
 	} else {
 		printReports(out, reports)
 	}
+	inconclusive := false
 	for _, r := range reports {
 		if !r.OK {
 			return errChecksFailed
 		}
+		inconclusive = inconclusive || r.Inconclusive
+	}
+	if inconclusive {
+		return errInconclusive
 	}
 	return nil
 }
@@ -104,8 +113,11 @@ func printReports(out io.Writer, reports []verify.Report) {
 			fmt.Fprintln(out)
 		}
 		verdict := "PASS"
-		if !r.OK {
+		switch {
+		case !r.OK:
 			verdict = "FAIL"
+		case r.Inconclusive:
+			verdict = "INCONCLUSIVE"
 		}
 		fmt.Fprintf(out, "%s  %s\n", printable(r.Exit), verdict)
 		tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
