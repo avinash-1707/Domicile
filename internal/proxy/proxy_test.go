@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -43,7 +45,9 @@ type env struct {
 
 // newEnv starts the server, an exit named "home" (unless withExit is false)
 // and the proxy routing everything through "home".
-func newEnv(t *testing.T, withExit bool) *env {
+// newEnv starts a server, optionally a connected exit, and a proxy; tune
+// adjusts the proxy's config.
+func newEnv(t *testing.T, withExit bool, tune ...func(*proxy.Config)) *env {
 	t.Helper()
 	cert, err := certs.SelfSigned("domicile")
 	if err != nil {
@@ -101,14 +105,18 @@ func newEnv(t *testing.T, withExit bool) *env {
 	}
 
 	logs := &syncBuffer{}
-	p, err := proxy.New(proxy.Config{
+	cfg := proxy.Config{
 		CheckUser: func(u, p string) bool { return u == proxyUser && secret.Equal(p, proxyPass) },
 		Dial: func(ctx context.Context, dst wire.Open) (tunnel.Stream, string, error) {
 			st, err := srv.Dial(ctx, "home", dst)
 			return st, "home", err
 		},
 		Logger: slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
-	})
+	}
+	for _, f := range tune {
+		f(&cfg)
+	}
+	p, err := proxy.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,6 +342,26 @@ func TestPlainHTTPThroughExit(t *testing.T) {
 	}
 	if !strings.Contains(e.logs.String(), "proto=http-forward") {
 		t.Fatalf("forwarded request not logged:\n%s", e.logs.String())
+	}
+}
+
+func TestPlainHTTPStalledBodyIsDropped(t *testing.T) {
+	e := newEnv(t, true, func(c *proxy.Config) { c.StallTimeout = 200 * time.Millisecond })
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+	}))
+	defer site.Close()
+	c, err := net.Dial("tcp", e.proxyAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	auth := base64.StdEncoding.EncodeToString([]byte(proxyUser + ":" + proxyPass))
+	// Promises 100 bytes, sends 2, then goes quiet.
+	io.WriteString(c, "POST "+site.URL+"/upload HTTP/1.1\r\nHost: x\r\nProxy-Authorization: Basic "+auth+"\r\nContent-Length: 100\r\n\r\nhi")
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.ReadAll(c); errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatal("a stalled upload held the connection past the stall timeout")
 	}
 }
 

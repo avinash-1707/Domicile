@@ -154,8 +154,24 @@ func TestVPSResolverUnknownIsNotOK(t *testing.T) {
 	base := Measure(context.Background(), to(endpoint(t, vps)), cfg)
 	base.DNS, base.DNSErr = Resolver{}, errors.New("lookup timed out")
 	r := Run(context.Background(), "home", to(home), base, cfg)
-	if got := result(r, "dns").Result; got == OK {
-		t.Fatalf("dns claimed ok without comparing against the VPS: %s", result(r, "dns").Detail)
+	if got := result(r, "dns").Result; got != Inconclusive || !r.Inconclusive || !r.OK {
+		t.Fatalf("dns = %s, report inconclusive %v ok %v; want an inconclusive report", got, r.Inconclusive, r.OK)
+	}
+}
+
+func TestDNSProbeFailureIsInconclusive(t *testing.T) {
+	home := endpoint(t, vantage{ip: "152.58.24.58", isp: "Jio", resolver: "49.45.40.102"})
+	base := Measure(context.Background(), to(endpoint(t, vps)), cfg)
+	// The geo request gets through the exit; the DNS probe does not.
+	via := func(ctx context.Context, host string, port uint16) (net.Conn, error) {
+		if strings.Contains(host, "edns") {
+			return nil, errors.New("i/o timeout")
+		}
+		return to(home)(ctx, host, port)
+	}
+	r := Run(context.Background(), "home", via, base, cfg)
+	if result(r, "dns").Result != Inconclusive || !r.Inconclusive {
+		t.Fatalf("a failed DNS probe reported %s, inconclusive %v", result(r, "dns").Result, r.Inconclusive)
 	}
 }
 

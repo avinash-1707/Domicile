@@ -48,6 +48,22 @@ func httpConnectHandshake(r *bufio.Reader, w io.Writer, check func(user, pass st
 		return wire.Open{}, nil, errHTTPAuth
 	}
 
+	if forward {
+		if exp := req.Header.Get("Expect"); strings.EqualFold(exp, "100-continue") {
+			// The request is written to the site whole, body included,
+			// before any response is read, so the client must not wait for
+			// the site's 100: answer it here and drop the expectation.
+			// Many clients (Go, PowerShell) do not retry after a 417.
+			if _, err := io.WriteString(w, "HTTP/1.1 100 Continue\r\n\r\n"); err != nil {
+				return wire.Open{}, nil, err
+			}
+			req.Header.Del("Expect")
+		} else if exp != "" {
+			_ = writeHTTPStatus(w, http.StatusExpectationFailed, "")
+			return wire.Open{}, nil, errors.New("http proxy: unsupported Expect on a plain-HTTP request")
+		}
+	}
+
 	authority := req.Host
 	if forward {
 		authority = req.URL.Host

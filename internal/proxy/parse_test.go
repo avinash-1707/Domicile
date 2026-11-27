@@ -171,6 +171,20 @@ func TestPlainHTTPRequestForForwarding(t *testing.T) {
 	}
 }
 
+func TestPlainHTTPExpectContinueAnsweredByProxy(t *testing.T) {
+	auth := base64.StdEncoding.EncodeToString([]byte("agent:pw"))
+	head := "POST http://example.com/upload HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: Basic " + auth + "\r\nContent-Length: 5\r\n"
+	var w bytes.Buffer
+	_, req, err := httpConnectHandshake(bufio.NewReader(strings.NewReader(head+"Expect: 100-Continue\r\n\r\nhello")), &w, allow)
+	if err != nil || w.String() != "HTTP/1.1 100 Continue\r\n\r\n" || req.Header.Get("Expect") != "" {
+		t.Fatalf("err %v, response %q, Expect %q; want 100 Continue and the expectation dropped", err, w.String(), req.Header.Get("Expect"))
+	}
+	w.Reset()
+	if _, _, err := httpConnectHandshake(bufio.NewReader(strings.NewReader(head+"Expect: something-else\r\n\r\nhello")), &w, allow); err == nil || !strings.HasPrefix(w.String(), "HTTP/1.1 417 ") {
+		t.Fatalf("unknown expectation: err %v, response %q; want 417", err, w.String())
+	}
+}
+
 func TestHTTPConnectPasswordWithColon(t *testing.T) {
 	check := func(user, pass string) bool { return user == "agent" && pass == "p:w" }
 	got, _, err := httpConnectHandshake(bufio.NewReader(strings.NewReader(connectReq("a.com:443", "agent:p:w"))), &bytes.Buffer{}, check)

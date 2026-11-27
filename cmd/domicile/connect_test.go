@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -250,8 +251,16 @@ func TestConnectShellWritesPrivateEnvFile(t *testing.T) {
 	}
 	env := filepath.Join(dir, "shell.env")
 	first, _ := os.ReadFile(env)
-	if info, _ := os.Stat(env); info.Mode().Perm() != 0o600 || !strings.Contains(string(first), "NODE_USE_ENV_PROXY=1") {
-		t.Fatalf("env file %o %q", info.Mode().Perm(), first)
+	if info, _ := os.Stat(env); info.Mode().Perm() != 0o600 {
+		t.Fatalf("env file mode %o, want 600", info.Mode().Perm())
+	}
+	// Sourced over stale lowercase settings, which curl and Go prefer.
+	sourced, err := exec.Command("sh", "-c", `http_proxy=http://old:1 no_proxy='*'; . "$1"; echo "$NODE_USE_ENV_PROXY $http_proxy $all_proxy $no_proxy"`, "sh", env).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := strings.Fields(string(sourced)); len(f) != 4 || f[0] != "1" || !strings.HasPrefix(f[1], "http://shell:") || !strings.HasPrefix(f[2], "socks5h://shell:") || f[3] != "localhost,127.0.0.1,::1" {
+		t.Fatalf("sourced env = %q", sourced)
 	}
 	if strings.Contains(out.String(), "shell:") {
 		t.Fatal("the password was printed instead of kept in the file")
@@ -259,6 +268,12 @@ func TestConnectShellWritesPrivateEnvFile(t *testing.T) {
 	runConnect([]string{toolShell, "-state-dir", dir}, &bytes.Buffer{})
 	if again, _ := os.ReadFile(env); string(again) != string(first) {
 		t.Fatal("a second connect rotated the password and broke open shells")
+	}
+	// A new address is written without rotating the password.
+	runConnect([]string{toolShell, "-proxy", "127.0.0.1:2080", "-state-dir", dir}, &bytes.Buffer{})
+	moved, _ := os.ReadFile(env)
+	if string(moved) != strings.ReplaceAll(string(first), "127.0.0.1:1080", "127.0.0.1:2080") {
+		t.Fatalf("new -proxy address not applied as the only change:\n%s", moved)
 	}
 	runConnect([]string{toolShell, "-rotate", "-state-dir", dir}, &bytes.Buffer{})
 	if rotated, _ := os.ReadFile(env); string(rotated) == string(first) {
@@ -288,8 +303,8 @@ func TestRunPassesProxyAndExitCode(t *testing.T) {
 	}
 
 	// The credential is stable across runs and valid for the proxy.
-	pw1, _ := runCredential(dir)
-	pw2, _ := runCredential(dir)
+	pw1, _, _ := toolCredential(dir, toolRun, false)
+	pw2, _, _ := toolCredential(dir, toolRun, false)
 	st, _ := state.Load(statePath(dir))
 	if pw1 != pw2 || !secret.MatchesDigest(pw1, st.Users[toolRun].PasswordSHA256) {
 		t.Fatal("run credential not stable or not valid")
@@ -374,5 +389,77 @@ func TestRunSignalReachesBackgroundJobs(t *testing.T) {
 	if err := syscall.Kill(pid, 0); err == nil {
 		syscall.Kill(pid, syscall.SIGKILL)
 		t.Fatal("background job survived the signal")
+	}
+}
+
+func TestConnectKeepsFileMode(t *testing.T) {
+	dir := initState(t)
+	// An owner-only MCP file may hold other servers' API keys.
+	mcpFile := filepath.Join(t.TempDir(), ".mcp.json")
+	os.WriteFile(mcpFile, []byte(sampleMCP), 0o600)
+	if err := runConnect([]string{toolPlaywright, "-state-dir", dir, "-file", mcpFile}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(mcpFile); info.Mode().Perm() != 0o600 {
+		t.Fatalf("connect made a 600 file %o", info.Mode().Perm())
+	}
+	if err := runConnect([]string{toolPlaywright, "-undo", "-state-dir", dir}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(mcpFile); info.Mode().Perm() != 0o600 {
+		t.Fatalf("undo made a 600 file %o", info.Mode().Perm())
+	}
+}
+
+func TestConnectFailureKeepsWorkingCredential(t *testing.T) {
+	dir := initState(t)
+	abDir := filepath.Join(t.TempDir(), "ab")
+	os.MkdirAll(abDir, 0o700)
+	file := filepath.Join(abDir, "config.json")
+	connect := func(extra ...string) error {
+		return runConnect(append([]string{toolAgentBrowser, "-state-dir", dir, "-file", file}, extra...), &bytes.Buffer{})
+	}
+	proxy := func() string {
+		var doc map[string]any
+		data, _ := os.ReadFile(file)
+		json.Unmarshal(data, &doc)
+		s, _ := doc["proxy"].(string)
+		return s
+	}
+	digest := func() string {
+		st, _ := state.Load(statePath(dir))
+		return st.Users[toolAgentBrowser].PasswordSHA256
+	}
+	if err := connect(); err != nil {
+		t.Fatal(err)
+	}
+	working, want := proxy(), digest()
+
+	// Reconnecting reuses the password that config already holds.
+	if err := connect(); err != nil || proxy() != working {
+		t.Fatalf("plain reconnect changed the password (err %v)", err)
+	}
+
+	// A config that is not a JSON object is refused before rotating.
+	broken := filepath.Join(abDir, "broken.json")
+	os.WriteFile(broken, []byte("null"), 0o600)
+	if err := runConnect([]string{toolAgentBrowser, "-rotate", "-state-dir", dir, "-file", broken}, &bytes.Buffer{}); err == nil {
+		t.Fatal("null config accepted")
+	}
+	if digest() != want {
+		t.Fatal("a refused config rotated the credential")
+	}
+
+	// A rotation whose write fails puts the previous password back.
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions; the failed write cannot be staged")
+	}
+	os.Chmod(abDir, 0o500)
+	t.Cleanup(func() { os.Chmod(abDir, 0o700) })
+	if err := connect("-rotate"); err == nil {
+		t.Fatal("write into a read-only directory succeeded")
+	}
+	if digest() != want || proxy() != working {
+		t.Fatal("a failed rotation left the working config with a revoked password")
 	}
 }

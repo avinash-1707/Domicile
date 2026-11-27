@@ -221,6 +221,13 @@ func (s *Server) forward(ctx context.Context, c *net.TCPConn, st tunnel.Stream, 
 	defer stop()
 	_ = c.SetDeadline(time.Time{})
 	attrs := []any{"proto", "http-forward", "host", dst.Host, "port", dst.Port, "via", path}
+	if req.Body != nil && req.Body != http.NoBody {
+		// A client that stops sending its body must not hold the
+		// connection and its tunnel stream forever. NoBody stays as is:
+		// any other body without a length would be sent chunked.
+		body := req.Body
+		req.Body = readCloser{Reader: stallReader(c, body, s.cfg.StallTimeout), Closer: body}
+	}
 
 	if err := forwardRequest(st, req); err != nil {
 		s.log.Info("proxied", append(attrs, "result", "aborted", "err", err)...)
@@ -247,6 +254,26 @@ func stallWriter(c *net.TCPConn, timeout time.Duration) io.Writer {
 		}
 		return c.Write(p)
 	})
+}
+
+// stallReader reads from r, which reads from c, failing once c has sent
+// nothing for timeout.
+func stallReader(c *net.TCPConn, r io.Reader, timeout time.Duration) io.Reader {
+	return readerFunc(func(p []byte) (int, error) {
+		if err := c.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			return 0, err
+		}
+		return r.Read(p)
+	})
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
+
+type readCloser struct {
+	io.Reader
+	io.Closer
 }
 
 type writerFunc func([]byte) (int, error)

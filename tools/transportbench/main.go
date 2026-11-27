@@ -1,4 +1,4 @@
-// Command transportbench measures tunnel transports on a lossy, delayed link:
+// Command transportbench measures the QUIC tunnel on a lossy, delayed link:
 // stream-open latency, page-style loads and bulk throughput. It picked the
 // tunnel transport and is kept for re-measuring QUIC tuning. It runs the
 // server and the exit in one process over
@@ -11,16 +11,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"slices"
-	"strings"
 	"time"
 )
 
 func main() {
 	var opts options
 	flag.StringVar(&opts.label, "label", "unshaped", "scenario label printed in the results row")
-	transportList := flag.String("transports", "quic", "comma-separated transports to run")
-	trials := flag.Int("trials", 5, "independent sessions per transport; order alternates between trials")
+	trials := flag.Int("trials", 5, "independent sessions")
 	flag.IntVar(&opts.openIters, "open-iters", 20, "sequential stream-open round trips per trial")
 	flag.IntVar(&opts.pageIters, "page-iters", 5, "page-style loads per trial")
 	flag.IntVar(&opts.pageStreams, "page-streams", 30, "parallel streams per page load")
@@ -35,40 +32,22 @@ func main() {
 		return
 	}
 
-	names := strings.Split(*transportList, ",")
-	for _, name := range names {
-		if _, ok := transports[name]; !ok {
-			fmt.Fprintf(os.Stderr, "unknown transport %q\n", name)
-			os.Exit(2)
-		}
-	}
-
-	// Alternating the order cancels out drift in the shared link and
-	// machine between the first and second transport of each trial.
-	results := make(map[string][]result, len(names))
+	results := make([]result, 0, *trials)
 	for i := range *trials {
-		order := slices.Clone(names)
-		if i%2 == 1 {
-			slices.Reverse(order)
+		res, err := run(context.Background(), opts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s / trial %d: %v\n", opts.label, i+1, err)
+			os.Exit(1)
 		}
-		for _, name := range order {
-			res, err := run(context.Background(), transports[name], opts)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "%s / %s / trial %d: %v\n", opts.label, name, i+1, err)
-				os.Exit(1)
-			}
-			results[name] = append(results[name], res)
-		}
+		results = append(results, res)
 	}
 
-	for _, name := range names {
-		s := summarizeTrials(results[name])
-		fmt.Printf("| %s | %s | %s | %s | %s (%s–%s) | %.1f (%.1f–%.1f) |\n",
-			opts.label, name,
-			ms(s.openP50), ms(s.pageP50),
-			ms(s.pageP95.median), ms(s.pageP95.min), ms(s.pageP95.max),
-			s.bulk.median, s.bulk.min, s.bulk.max)
-	}
+	s := summarizeTrials(results)
+	fmt.Printf("| %s | quic | %s | %s | %s (%s–%s) | %.1f (%.1f–%.1f) |\n",
+		opts.label,
+		ms(s.openP50), ms(s.pageP50),
+		ms(s.pageP95.median), ms(s.pageP95.min), ms(s.pageP95.max),
+		s.bulk.median, s.bulk.min, s.bulk.max)
 }
 
 func ms(d time.Duration) string {

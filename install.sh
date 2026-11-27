@@ -33,6 +33,35 @@ as_root() {
 	if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi
 }
 
+# root_safe reports whether only root can replace the file $1: it and every
+# directory above it are owned by root and writable by no one else. Service
+# setup runs the binary with sudo, so any other writer could take over the
+# machine, and the checksum checked earlier says nothing about it now.
+root_safe() {
+	# Walk the physical path: through a symlinked directory, the parents
+	# that matter are the target's, not the link's.
+	[ ! -L "$1" ] || return 1
+	d=$(cd -P -- "$(dirname -- "$1")" 2>/dev/null && pwd -P) || return 1
+	case $d in /*) ;; *) return 1 ;; esac
+	p=${d%/}/$(basename -- "$1")
+	while :; do
+		l=$(ls -ldnL "$p" 2>/dev/null) || return 1
+		# shellcheck disable=SC2086 # split into mode, links, uid, ...
+		set -- $l
+		[ "${3:-}" = 0 ] || return 1
+		case $1 in ?????w* | ????????w*) return 1 ;; esac
+		[ "$p" = / ] && return 0
+		p=$(dirname "$p")
+	done
+}
+
+# need_root_install explains why service setup is skipped for $1.
+need_root_install() {
+	say "Not setting up the service: $1 can be replaced without root, and setup runs it with sudo."
+	say "Install it where only root can write first:"
+	say "  sudo install -m 0755 $1 /usr/local/bin/domicile"
+}
+
 # Everything runs from main, so a download cut short by `curl | sh` runs
 # nothing.
 main() {
@@ -75,8 +104,8 @@ main() {
 		as_root install -m 0755 "$tmp/$asset" "$BIN_DIR/domicile"
 	else
 		mv "$tmp/$asset" ./domicile
-		BIN_DIR=.
-		say "Left the binary at ./domicile."
+		BIN_DIR=$PWD
+		say "Left the binary at $BIN_DIR/domicile."
 	fi
 	domicile="$BIN_DIR/domicile"
 	say "Installed $("$domicile" version)."
@@ -97,7 +126,11 @@ main() {
 	if [ "${1:-}" = join ]; then
 		[ -n "${2:-}" ] || die "usage: install.sh join <code from 'domicile add'>"
 		"$domicile" agent join -pair-only "$2"
-		if ask "Run the exit as a service, so it starts at boot and reconnects on its own?"; then
+		if [ "$os" = linux ] && ! root_safe "$domicile"; then
+			need_root_install "$domicile"
+			say "then: sudo /usr/local/bin/domicile service install agent -user $(id -un) -state-dir ${XDG_STATE_HOME:-$HOME/.local/state}/domicile"
+			say "Or start it yourself with: $domicile agent"
+		elif ask "Run the exit as a service, so it starts at boot and reconnects on its own?"; then
 			if [ "$os" = linux ]; then
 				# sudo drops XDG_STATE_HOME, so name the directory join used.
 			as_root "$domicile" service install agent -yes -user "$(id -un)" -state-dir "${XDG_STATE_HOME:-$HOME/.local/state}/domicile"
@@ -113,7 +146,12 @@ main() {
 	say ""
 	say "Next, on this VPS:"
 	say "  $domicile init -public-addr <this server's address>:443"
-	say "  sudo $domicile service install server"
+	if root_safe "$domicile"; then
+		say "  sudo $domicile service install server"
+	else
+		say "  sudo install -m 0755 $domicile /usr/local/bin/domicile   # only root may be able to replace a binary sudo runs"
+		say "  sudo /usr/local/bin/domicile service install server"
+	fi
 	say "  $domicile add home      # prints the join command for your home device"
 }
 

@@ -29,7 +29,8 @@ type ExitDialer interface {
 
 // Options adjust a Router.
 type Options struct {
-	// BlockLocalDirect refuses direct connections to the VPS itself and to
+	// BlockLocalDirect refuses direct connections to the VPS itself (any
+	// address on its interfaces, public ones included) and to
 	// private, link-local (cloud metadata) and unspecified addresses. Set it
 	// whenever the proxy is reachable from other hosts: their clients could
 	// not reach those addresses without the proxy.
@@ -42,6 +43,8 @@ type Router struct {
 	exits  ExitDialer
 	direct net.Dialer
 	log    *slog.Logger
+	// ownAddrs lists the VPS's interface addresses; tests replace it.
+	ownAddrs func() ([]netip.Addr, error)
 }
 
 // New returns a Router over the given rules.
@@ -49,7 +52,7 @@ func New(table *rules.Table, exits ExitDialer, log *slog.Logger, opts Options) *
 	if log == nil {
 		log = slog.Default()
 	}
-	r := &Router{exits: exits, log: log}
+	r := &Router{exits: exits, log: log, ownAddrs: interfaceAddrs}
 	r.table.Store(table)
 	if opts.BlockLocalDirect {
 		// Control sees the resolved address right before connecting, so a
@@ -59,14 +62,45 @@ func New(table *rules.Table, exits ExitDialer, log *slog.Logger, opts Options) *
 			if err != nil {
 				return errLocalDenied
 			}
-			if ip := ap.Addr().Unmap(); ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+			ip := ap.Addr().Unmap().WithZone("")
+			if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
 				ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
 				return errLocalDenied
+			}
+			// The VPS's own public addresses reach services bound to them,
+			// which remote clients could not otherwise get past its firewall.
+			// SIMPLIFIED: lists interfaces on every dial; cache them if the
+			// exposed proxy ever carries enough direct traffic to notice.
+			own, err := r.ownAddrs()
+			if err != nil {
+				return errLocalDenied
+			}
+			for _, a := range own {
+				if a == ip {
+					return errLocalDenied
+				}
 			}
 			return nil
 		}
 	}
 	return r
+}
+
+// interfaceAddrs lists the addresses assigned to this host's interfaces.
+func interfaceAddrs() ([]netip.Addr, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]netip.Addr, 0, len(addrs))
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(ipn.IP); ok {
+				out = append(out, ip.Unmap())
+			}
+		}
+	}
+	return out, nil
 }
 
 var errLocalDenied = errors.New("direct connection to a local or private address refused")

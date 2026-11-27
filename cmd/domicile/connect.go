@@ -15,9 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 
-	"github.com/avinash-1707/domicile/internal/secret"
 	"github.com/avinash-1707/domicile/internal/state"
 )
 
@@ -38,8 +36,9 @@ const webRTCFlag = "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
 
 // toolSecrets are the files under the state dir that hold a tool's password.
 var toolSecrets = map[string][]string{
-	toolPlaywright: {"playwright-mcp.json"},
-	toolShell:      {"shell.env"},
+	toolPlaywright:   {"playwright-mcp.json", toolPlaywright + ".secret"},
+	toolAgentBrowser: {toolAgentBrowser + ".secret"},
+	toolShell:        {"shell.env", toolShell + ".secret"},
 }
 
 func runConnect(args []string, out io.Writer) error {
@@ -52,7 +51,7 @@ func runConnect(args []string, out io.Writer) error {
 	proxyAddr := fs.String("proxy", defaultProxyAddr, "address of domicile's proxy, as passed to `domicile server -proxy`")
 	undo := fs.Bool("undo", false, "restore every file connect changed for this tool and revoke its proxy user")
 	file := fs.String("file", "", "config file to change: an MCP client's JSON for playwright-mcp (default: print the `claude mcp add` command instead), the agent-browser config (default ~/.agent-browser/config.json)")
-	rotate := fs.Bool("rotate", false, "shell: issue a new password even if the env file exists")
+	rotate := fs.Bool("rotate", false, "issue a new password instead of reusing the tool's current one")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
@@ -68,10 +67,10 @@ func runConnect(args []string, out io.Writer) error {
 		return fmt.Errorf("-proxy: %w", err)
 	}
 
+	// Every tool's file is checked before its credential is touched, so a
+	// refused change leaves the working setup as it was.
 	switch tool {
 	case toolPlaywright:
-		// Check the MCP file before issuing a credential, so a refused
-		// change leaves nothing behind.
 		var plan *fileChange
 		if *file != "" {
 			p, err := planPlaywright(*file, playwrightConfPath(*stateDir))
@@ -80,34 +79,39 @@ func runConnect(args []string, out io.Writer) error {
 			}
 			plan = p
 		}
-		password, err := rotateToolUser(*stateDir, tool)
-		if err != nil {
-			return err
-		}
-		return connectPlaywright(*stateDir, *proxyAddr, password, plan, out)
+		return withCredential(*stateDir, tool, *rotate, func(password string) error {
+			return connectPlaywright(*stateDir, *proxyAddr, password, plan, out)
+		})
 	case toolAgentBrowser:
-		password, err := rotateToolUser(*stateDir, tool)
+		plan, err := planAgentBrowser(*file)
 		if err != nil {
 			return err
 		}
-		return connectAgentBrowser(*stateDir, *proxyAddr, password, *file, out)
+		return withCredential(*stateDir, tool, *rotate, func(password string) error {
+			return connectAgentBrowser(*stateDir, *proxyAddr, password, plan, out)
+		})
 	default:
-		return connectShell(*stateDir, *proxyAddr, *rotate, out)
+		return withCredential(*stateDir, tool, *rotate, func(password string) error {
+			return connectShell(*stateDir, *proxyAddr, password, out)
+		})
 	}
 }
 
-// rotateToolUser gives tool a proxy user with a fresh password. A running
-// server accepts it at once (state.Live re-reads the file on a login miss).
-func rotateToolUser(stateDir, tool string) (string, error) {
-	password, err := state.NewSecret()
+// withCredential runs write with tool's password. If write fails after a new
+// password was issued, the previous one is restored, so configs still
+// holding it keep working.
+func withCredential(stateDir, tool string, rotate bool, write func(password string) error) error {
+	password, restore, err := toolCredential(stateDir, tool, rotate)
 	if err != nil {
-		return "", err
+		return err
 	}
-	err = state.Update(statePath(stateDir), func(st *state.State) error {
-		st.Users[tool] = state.User{PasswordSHA256: secret.Digest(password), Created: time.Now().UTC()}
-		return nil
-	})
-	return password, err
+	if err := write(password); err != nil {
+		if rerr := restore(); rerr != nil {
+			return errors.Join(err, fmt.Errorf("restore the previous %s credential: %w", tool, rerr))
+		}
+		return err
+	}
+	return nil
 }
 
 func proxyURL(scheme, addr, user, password string) string {
@@ -115,24 +119,21 @@ func proxyURL(scheme, addr, user, password string) string {
 }
 
 func shellExports(addr, user, password string) string {
-	h := proxyURL("http", addr, user, password)
-	return fmt.Sprintf("export ALL_PROXY=%q\nexport HTTPS_PROXY=%q\nexport HTTP_PROXY=%q\nexport NO_PROXY=localhost,127.0.0.1,::1\nexport NODE_USE_ENV_PROXY=1\n",
-		proxyURL("socks5h", addr, user, password), h, h)
+	var b strings.Builder
+	for _, v := range proxyVars(addr, user, password) {
+		fmt.Fprintf(&b, "export %s=%q\n", v[0], v[1])
+	}
+	return b.String()
 }
 
 // connectShell keeps the exports in a 0600 file to source, so the password
-// never goes into a shell profile, and reuses it so every open shell keeps
-// working; -rotate issues a new one.
-func connectShell(stateDir, addr string, rotate bool, out io.Writer) error {
+// never goes into a shell profile. The file is rewritten every time, so a
+// new -proxy address takes effect; the password is reused unless -rotate,
+// so every open shell keeps working.
+func connectShell(stateDir, addr, password string, out io.Writer) error {
 	path := filepath.Join(stateDir, "shell.env")
-	if _, err := os.Stat(path); err != nil || rotate {
-		password, err := rotateToolUser(stateDir, toolShell)
-		if err != nil {
-			return err
-		}
-		if err := state.WriteFileAtomic(path, []byte(shellExports(addr, toolShell, password)), 0o600); err != nil {
-			return err
-		}
+	if err := state.WriteFileAtomic(path, []byte(shellExports(addr, toolShell, password)), 0o600); err != nil {
+		return err
 	}
 	fmt.Fprintf(out, "Load the proxy settings into a shell with:\n  . %s\n(the file is private to you; add that line to your shell profile to load it automatically)\n", absPath(path))
 	return nil
@@ -143,8 +144,24 @@ type fileChange struct {
 	path     string // symlinks resolved, so the link itself is kept
 	original []byte
 	existed  bool
+	mode     os.FileMode // of the original; kept when connect rewrites it
 	entries  int
-	apply    func(confPath string) ([]byte, error)
+	// apply returns the edited file, given what connect points the tool at:
+	// the Playwright config path, or the agent-browser proxy URL.
+	apply func(target string) ([]byte, error)
+}
+
+// readOriginal reads a tool's config file and its permissions.
+func readOriginal(path string) (data []byte, mode os.FileMode, existed bool, err error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, 0, false, nil
+	}
+	if err != nil {
+		return nil, 0, false, err
+	}
+	data, err = os.ReadFile(path)
+	return data, info.Mode().Perm(), err == nil, err
 }
 
 func playwrightConfPath(stateDir string) string {
@@ -159,9 +176,12 @@ func planPlaywright(file, ours string) (*fileChange, error) {
 	if err != nil {
 		return nil, err
 	}
-	original, err := os.ReadFile(path)
+	original, mode, existed, err := readOriginal(path)
 	if err != nil {
 		return nil, err
+	}
+	if !existed {
+		return nil, fmt.Errorf("%s: %w", file, os.ErrNotExist)
 	}
 	doc, err := decodeJSON(original)
 	if err != nil {
@@ -200,7 +220,7 @@ func planPlaywright(file, ours string) (*fileChange, error) {
 	if n == 0 {
 		return nil, fmt.Errorf("%s has no @playwright/mcp server", file)
 	}
-	return &fileChange{path: path, original: original, existed: true, entries: n, apply: func(confPath string) ([]byte, error) {
+	return &fileChange{path: path, original: original, existed: true, mode: mode, entries: n, apply: func(confPath string) ([]byte, error) {
 		for _, v := range servers {
 			entry, ok := v.(map[string]any)
 			if !ok || !isPlaywright(entry) {
@@ -265,6 +285,18 @@ func connectPlaywright(stateDir, addr, password string, plan *fileChange, out io
 	if err != nil {
 		return err
 	}
+	if plan != nil {
+		// The MCP file only names the config, so it is changed first: if
+		// that fails, the config still holds the password the server
+		// accepts once the credential is restored.
+		updated, err := plan.apply(confPath)
+		if err != nil {
+			return err
+		}
+		if err := applyChange(stateDir, toolPlaywright, plan, updated, false); err != nil {
+			return err
+		}
+	}
 	if err := state.WriteFileAtomic(confPath, data, 0o600); err != nil {
 		return err
 	}
@@ -276,57 +308,54 @@ func connectPlaywright(stateDir, addr, password string, plan *fileChange, out io
 		fmt.Fprintf(out, "\nAdd it to Claude Code (this machine only):\n  claude mcp add -s local playwright -- npx @playwright/mcp@latest --config %s\nOther MCP clients: run @playwright/mcp with --config %s\n", confPath, confPath)
 		return nil
 	}
-	updated, err := plan.apply(confPath)
-	if err != nil {
-		return err
-	}
-	if err := applyChange(stateDir, toolPlaywright, plan, updated, 0o644); err != nil {
-		return err
-	}
 	fmt.Fprintf(out, "Updated %d Playwright server entr%s in %s. Restart your MCP client.\nUndo with: domicile connect playwright-mcp -undo\n", plan.entries, plural(plan.entries, "y", "ies"), plan.path)
 	return nil
 }
 
-// connectAgentBrowser sets agent-browser's user-level "proxy" key, which
-// accepts credentials in the URL.
-func connectAgentBrowser(stateDir, addr, password, file string, out io.Writer) error {
+// planAgentBrowser checks agent-browser's config and prepares the edit that
+// sets its user-level "proxy" key, which accepts credentials in the URL.
+func planAgentBrowser(file string) (*fileChange, error) {
 	if file == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		file = filepath.Join(home, ".agent-browser", "config.json")
 	}
 	path, err := resolve(file)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	original, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	original, mode, existed, err := readOriginal(path)
+	if err != nil {
+		return nil, err
 	}
-	existed := err == nil
 	doc := map[string]any{}
 	if len(bytes.TrimSpace(original)) > 0 {
 		if doc, err = decodeJSON(original); err != nil {
-			return fmt.Errorf("%s: %w", file, err)
+			return nil, fmt.Errorf("%s: %w", file, err)
 		}
 	}
-	doc["proxy"] = proxyURL("http", addr, toolAgentBrowser, password)
-	delete(doc, "proxyBypass") // domicile's rules decide what bypasses home
-	updated, err := encodeJSON(doc)
+	return &fileChange{path: path, original: original, existed: existed, mode: mode, apply: func(proxy string) ([]byte, error) {
+		doc["proxy"] = proxy
+		delete(doc, "proxyBypass") // domicile's rules decide what bypasses home
+		return encodeJSON(doc)
+	}}, nil
+}
+
+func connectAgentBrowser(stateDir, addr, password string, plan *fileChange, out io.Writer) error {
+	updated, err := plan.apply(proxyURL("http", addr, toolAgentBrowser, password))
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(plan.path), 0o700); err != nil {
 		return err
 	}
 	// The file now holds a proxy password.
-	change := &fileChange{path: path, original: original, existed: existed}
-	if err := applyChange(stateDir, toolAgentBrowser, change, updated, 0o600); err != nil {
+	if err := applyChange(stateDir, toolAgentBrowser, plan, updated, true); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Set the proxy in %s (proxy user %q).\nUndo with: domicile connect agent-browser -undo\n", path, toolAgentBrowser)
+	fmt.Fprintf(out, "Set the proxy in %s (proxy user %q).\nUndo with: domicile connect agent-browser -undo\n", plan.path, toolAgentBrowser)
 	return nil
 }
 
@@ -336,6 +365,9 @@ func decodeJSON(data []byte) (map[string]any, error) {
 	var doc map[string]any
 	if err := dec.Decode(&doc); err != nil {
 		return nil, err
+	}
+	if doc == nil {
+		return nil, errors.New("not a JSON object")
 	}
 	return doc, nil
 }
@@ -365,10 +397,13 @@ func resolve(file string) (string, error) {
 // backup remembers what connect changed in one file so -undo can put it back
 // exactly. Contents are stored as strings so the file is readable by hand.
 type backup struct {
-	File     string `json:"file"`
-	Existed  bool   `json:"existed"`
-	Original string `json:"original"`
-	Written  string `json:"written"`
+	File    string `json:"file"`
+	Existed bool   `json:"existed"`
+	// Mode is the original file's permissions, restored by undo. Backups
+	// written before it existed have 0: undo then keeps the current mode.
+	Mode     os.FileMode `json:"mode,omitempty"`
+	Original string      `json:"original"`
+	Written  string      `json:"written"`
 }
 
 func backupDir(stateDir, tool string) string { return filepath.Join(stateDir, "connect", tool) }
@@ -380,14 +415,23 @@ func backupPath(stateDir, tool, file string) string {
 	return filepath.Join(backupDir(stateDir, tool), hex.EncodeToString(sum[:8])+".json")
 }
 
-// applyChange records a backup, then writes updated to the file.
-func applyChange(stateDir, tool string, c *fileChange, updated []byte, perm os.FileMode) error {
-	b := backup{File: c.path, Existed: c.existed, Original: string(c.original), Written: string(updated)}
+// applyChange records a backup, then writes updated to the file. The file
+// keeps its permissions, so an owner-only config holding other tools' keys
+// stays owner-only; private forces 0600 because updated holds a password.
+func applyChange(stateDir, tool string, c *fileChange, updated []byte, private bool) error {
+	b := backup{File: c.path, Existed: c.existed, Mode: c.mode, Original: string(c.original), Written: string(updated)}
 	if prev, err := loadBackup(backupPath(stateDir, tool, c.path)); err == nil && string(c.original) == prev.Written {
 		// Connecting again over our own last write: keep the first original
 		// so undo returns to the file as it was before domicile touched it.
 		// If the user edited the file since, their version is the new one.
-		b.Existed, b.Original = prev.Existed, prev.Original
+		b.Existed, b.Mode, b.Original = prev.Existed, prev.Mode, prev.Original
+	}
+	perm := c.mode
+	switch {
+	case private:
+		perm = 0o600
+	case !c.existed:
+		perm = 0o644
 	}
 	data, err := json.MarshalIndent(b, "", "  ")
 	if err != nil {
@@ -436,7 +480,15 @@ func disconnect(tool, stateDir string, out io.Writer) error {
 			skipped = append(skipped, fmt.Sprintf("%s (changed since connect; its original is in %s)", b.File, bp))
 			continue
 		case b.Existed:
-			if err := state.WriteFileAtomic(b.File, []byte(b.Original), 0o644); err != nil {
+			mode := b.Mode
+			if mode == 0 {
+				info, err := os.Stat(b.File)
+				if err != nil {
+					return err
+				}
+				mode = info.Mode().Perm()
+			}
+			if err := state.WriteFileAtomic(b.File, []byte(b.Original), mode); err != nil {
 				return err
 			}
 			fmt.Fprintf(out, "Restored %s.\n", b.File)

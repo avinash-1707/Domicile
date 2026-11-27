@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -171,6 +172,18 @@ func TestBlockLocalDirect(t *testing.T) {
 		if !errors.As(err, &oe) || oe.Status != wire.OpenDenied {
 			t.Errorf("direct dial to %s = %v, want denied", host, err)
 		}
+	}
+}
+
+func TestBlockLocalDirectRefusesOwnPublicAddress(t *testing.T) {
+	r := New(rules.NewTable(rules.Config{}), &fakeExits{}, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{BlockLocalDirect: true})
+	// 192.0.2.10 is documentation space, not private: only the interface
+	// check can refuse it.
+	r.ownAddrs = func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("192.0.2.10")}, nil }
+	_, _, err := r.Dial(context.Background(), wire.Open{Host: "192.0.2.10", Port: 22})
+	var oe *wire.OpenError
+	if !errors.As(err, &oe) || oe.Status != wire.OpenDenied {
+		t.Fatalf("direct dial to the VPS's own public address = %v, want denied", err)
 	}
 }
 

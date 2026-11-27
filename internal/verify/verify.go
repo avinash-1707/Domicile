@@ -1,4 +1,6 @@
-// Package verify checks what a website actually sees through an exit: the
+// Package verify is an exit health check: what a website sees through an
+// exit, dialled directly over the control socket, so neither the rules nor a
+// client's proxy settings are involved. It reports the
 // public IP compared with the VPS's, what kind of network it belongs to,
 // where DNS was resolved, and the timezone a browser should claim. It makes
 // the same requests through the exit and directly from the VPS and compares.
@@ -41,6 +43,10 @@ const (
 	Fail Result = "fail"
 	Warn Result = "warn"
 	Info Result = "info"
+	// Inconclusive means a check that decides the verdict could not be
+	// measured (the VPS's address or a DNS probe failed), so it is neither
+	// a pass nor a failure.
+	Inconclusive Result = "inconclusive"
 )
 
 // Check is one line of the report.
@@ -65,14 +71,17 @@ type Location struct {
 
 // Report is the result for one exit.
 type Report struct {
-	Exit        string   `json:"exit"`
-	OK          bool     `json:"ok"`
-	Checks      []Check  `json:"checks"`
-	ViaExit     Location `json:"via_exit"`
-	Direct      Location `json:"direct"`
-	ExitDNS     Resolver `json:"exit_dns"`
-	DirectDNS   Resolver `json:"direct_dns"`
-	TunnelMilli int64    `json:"tunnel_ms"`
+	Exit string `json:"exit"`
+	// OK is false when a check failed. Inconclusive is true when none
+	// failed but the exit IP or DNS check could not be measured.
+	OK           bool     `json:"ok"`
+	Inconclusive bool     `json:"inconclusive"`
+	Checks       []Check  `json:"checks"`
+	ViaExit      Location `json:"via_exit"`
+	Direct       Location `json:"direct"`
+	ExitDNS      Resolver `json:"exit_dns"`
+	DirectDNS    Resolver `json:"direct_dns"`
+	TunnelMilli  int64    `json:"tunnel_ms"`
 }
 
 // Resolver is the DNS resolver the DNS endpoint saw.
@@ -143,7 +152,7 @@ func Run(ctx context.Context, exit string, viaExit Dialer, base Baseline, cfg Co
 
 	switch {
 	case r.Direct.IP == "":
-		add("exit ip", Info, "%s (the VPS's own address is unknown, so not compared)", via.IP)
+		add("exit ip", Inconclusive, "%s (the VPS's own address is unknown, so not compared)", via.IP)
 	case via.IP == r.Direct.IP:
 		add("exit ip", Fail, "%s is the VPS's own address: traffic is not leaving through %s", via.IP, exit)
 	default:
@@ -166,11 +175,11 @@ func Run(ctx context.Context, exit string, viaExit Dialer, base Baseline, cfg Co
 	r.ExitDNS, err = resolver(ctx, viaExit, cfg.DNSURL)
 	r.DirectDNS = base.DNS
 	if err != nil {
-		add("dns", Warn, "could not check where DNS is resolved: %v", err)
+		add("dns", Inconclusive, "could not check where DNS is resolved: %v", err)
 	} else {
 		switch {
 		case base.DNSErr != nil || r.DirectDNS.IP == "":
-			add("dns", Info, "resolved by %s (%s); the VPS's resolver is unknown, so not compared", r.ExitDNS.IP, r.ExitDNS.Geo)
+			add("dns", Inconclusive, "resolved by %s (%s); the VPS's resolver is unknown, so not compared", r.ExitDNS.IP, r.ExitDNS.Geo)
 		case r.ExitDNS.IP == r.DirectDNS.IP:
 			add("dns", Fail, "names are resolved by the same resolver address as the VPS, %s (%s): a DNS leak, or both sides use one public resolver", r.ExitDNS.IP, r.ExitDNS.Geo)
 		case r.ExitDNS.Geo == r.DirectDNS.Geo:
@@ -193,10 +202,14 @@ func Run(ctx context.Context, exit string, viaExit Dialer, base Baseline, cfg Co
 func finish(r Report) Report {
 	r.OK = true
 	for _, c := range r.Checks {
-		if c.Result == Fail {
+		switch c.Result {
+		case Fail:
 			r.OK = false
+		case Inconclusive:
+			r.Inconclusive = true
 		}
 	}
+	r.Inconclusive = r.Inconclusive && r.OK
 	return r
 }
 
