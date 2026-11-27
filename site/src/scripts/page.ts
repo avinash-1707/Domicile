@@ -241,10 +241,12 @@ function initCopy(): void {
   };
   $$<HTMLButtonElement>("button[data-copy]").forEach((btn) => {
     const label = btn.querySelector<HTMLElement>(".copy-label");
+    // only command blocks have text on screen to select by hand when copying fails
+    const failText = btn.parentElement?.querySelector("pre") ? "Select and copy" : "Copy failed";
     let timer = 0;
     const setState = (state: "idle" | "done" | "failed"): void => {
       btn.dataset.state = state;
-      if (label) label.textContent = state === "done" ? "Copied" : state === "failed" ? "Select and copy" : "Copy";
+      if (label) label.textContent = state === "done" ? "Copied" : state === "failed" ? failText : "Copy";
       window.clearTimeout(timer);
       if (state !== "idle") timer = window.setTimeout(() => setState("idle"), state === "done" ? 2000 : 4000);
     };

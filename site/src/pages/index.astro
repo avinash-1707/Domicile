@@ -117,6 +117,27 @@ const footerLinks = [
   { href: "https://www.linkedin.com/in/avinash-narwariya/", label: "LinkedIn", detail: "avinash-narwariya", icon: "linkedin" },
   { href: "mailto:avinashnarwariya5@gmail.com", label: "Email", detail: "avinashnarwariya5@gmail.com", icon: "mail" },
 ] as const;
+
+const footerColumns = [
+  {
+    title: "On this page",
+    links: [
+      { href: "#how", label: "How it works" },
+      { href: "#setup", label: "Set up" },
+      { href: "#tools", label: "Tools" },
+      { href: "#proof", label: "Verify" },
+      { href: "#safety", label: "Safety" },
+    ],
+  },
+  {
+    title: "Project",
+    links: [
+      { href: repo, label: "Source code" },
+      { href: `${repo}/issues`, label: "Report an issue" },
+      { href: `${repo}/blob/main/LICENSE`, label: "Apache-2.0 license" },
+    ],
+  },
+];
 ---
 <!doctype html>
 <html lang="en">
@@ -489,46 +510,46 @@ const footerLinks = [
     </main>
 
     <footer class="footer">
-      <svg class="footer-horizon" viewBox="0 0 1440 140" preserveAspectRatio="xMaxYMax slice" aria-hidden="true">
-        <g class="fh-stars">
-          <circle cx="96" cy="34" r="1" /><circle cx="212" cy="70" r="1.2" /><circle cx="348" cy="22" r="0.8" /><circle cx="470" cy="58" r="1" /><circle cx="604" cy="30" r="1.3" /><circle cx="742" cy="76" r="0.9" /><circle cx="866" cy="18" r="1" /><circle cx="988" cy="54" r="1.1" /><circle cx="1102" cy="28" r="0.8" /><circle cx="1390" cy="40" r="1" />
-        </g>
-        <path class="fh-hill" d="M0 112 C 180 96, 330 104, 520 108 S 860 92, 1040 106 S 1300 100, 1440 108" />
-        <path class="fh-ground" d="M0 120H1440" />
-        <path class="fh-tunnel" d="M0 130H1236V112" />
-        <g class="fh-tree"><path d="M1130 120v-10" /><ellipse cx="1130" cy="98" rx="7" ry="14" /></g>
-        <g class="fh-tree"><path d="M1352 120v-8" /><circle cx="1347" cy="104" r="7" /><circle cx="1357" cy="102" r="6" /></g>
-        <g class="fh-house">
-          <path d="M1180 120V82L1222 52L1264 82V120" />
-          <path d="M1172 86L1222 46L1272 86" />
-          <path d="M1194 72V58H1204V64" />
-          <rect class="fh-lamp" x="1230" y="90" width="18" height="16" />
-          <path d="M1239 90v16M1230 98h18" />
-          <rect class="fh-pi" x="1228" y="108" width="14" height="6" rx="1" />
-        </g>
-      </svg>
+      <canvas class="field" data-field="footer" aria-hidden="true"></canvas>
       <div class="wrap footer-grid">
-        <div class="footer-sign">
-          <p class="footer-by">Built by Avinash</p>
-          <p class="footer-text">I build agent infrastructure and developer tools. Found a bug, or a site domicile did not help with? Open an issue or email me.</p>
+        <div class="footer-brand">
+          <p class="wordmark footer-mark">
+            <svg viewBox="0 0 32 32" aria-hidden="true"><path class="wm-house" d="M3.5 14.5 16 3l12.5 11.5v9.5h-25z" /><path class="wm-door" d="M13.5 16.5h5v9h-5z" /><path class="wm-tube" d="M16 19.5V27.5H6" /></svg>
+            <span>domicile</span>
+          </p>
+          <p class="footer-text">A home network exit for agents on a VPS. The domains you choose leave from your own connection, and everything else stays on the server.</p>
+          <p class="footer-by">Built by Avinash. Found a bug, or a site it did not help with? Open an issue or email me.</p>
+          <div class="socials" role="group" aria-label="Avinash elsewhere" data-indicator-group>
+            <span class="ind" aria-hidden="true"></span>
+            {footerLinks.map((l) => (
+              <a class="soc" href={l.href} aria-label={l.icon === "mail" ? `Email ${l.detail}` : `${l.label}: ${l.detail}`} data-ind-item>
+                <Icon name={l.icon} />
+                <span class="tip" aria-hidden="true">{l.icon === "mail" ? l.detail : l.label}</span>
+              </a>
+            ))}
+            <button type="button" class="soc soc-copy" data-copy="avinashnarwariya5@gmail.com" aria-label="Copy email address" data-ind-item>
+              <span class="copy-icons" aria-hidden="true"><Icon name="copy" class="i-copy" /><Icon name="check" class="i-done" /><Icon name="warning" class="i-fail" /></span>
+              <span class="tip copy-label" aria-hidden="true">Copy</span>
+            </button>
+          </div>
         </div>
-        <nav class="footer-links" aria-label="Project and contact links" data-indicator-group>
-          <span class="ind" aria-hidden="true"></span>
-          {footerLinks.map((l) => (
-            <div class="fl-row">
-              <a href={l.href} data-ind-item><Icon name={l.icon} /><span class="fl-label">{l.label}</span><span class="fl-detail">{l.detail}</span></a>
-              {l.icon === "mail" && (
-                <button type="button" class="copy copy-mini" data-copy="avinashnarwariya5@gmail.com" aria-label="Copy email address">
-                  <span class="copy-icons" aria-hidden="true"><Icon name="copy" class="i-copy" /><Icon name="check" class="i-done" /><Icon name="warning" class="i-fail" /></span>
-                  <span class="copy-label">Copy</span>
-                </button>
-              )}
-            </div>
-          ))}
-        </nav>
+        {footerColumns.map((col, i) => (
+          <nav class="footer-col" aria-labelledby={`fcol-${i}`}>
+            <p class="footer-col-title" id={`fcol-${i}`}>{col.title}</p>
+            <ul>
+              {col.links.map((l) => (
+                <li><a href={l.href}>{l.label}</a></li>
+              ))}
+            </ul>
+          </nav>
+        ))}
+      </div>
+      <div class="wrap footer-route" data-draw aria-hidden="true">
+        <span class="fr-line"></span>
+        <svg class="fr-home" viewBox="0 0 32 32"><path class="wm-house" d="M3.5 14.5 16 3l12.5 11.5v9.5h-25z" /><path class="wm-door" d="M13.5 16.5h5v9h-5z" /><path class="wm-tube" d="M16 19.5V27.5H6" /></svg>
       </div>
       <div class="wrap footer-base">
-        <p>domicile is free and open source under Apache-2.0. Use your own connection for your own agents.</p>
+        <p>Free and open source under Apache-2.0. Use your own connection for your own agents.</p>
         <a href="#top">Back to top</a>
       </div>
     </footer>

@@ -7,7 +7,7 @@
 // highp where the GPU offers it in fragment shaders; mediump drifts and bands at large coordinates on some phones
 const PRELUDE =
   "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n" +
-  "uniform vec2 r;uniform float t;uniform vec3 c0,c1,c2,c3;" +
+  "uniform vec2 r,a;uniform float t;uniform vec3 c0,c1,c2,c3;" +
   "float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}" +
   "float n(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(h(i),h(i+vec2(1,0)),f.x),mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x),f.y);}" +
   "float fbm(vec2 p){float v=0.,a=.5;for(int k=0;k<5;k++){v+=a*n(p);p=p*2.03+vec2(1.7,9.2);a*=.5;}return v;}";
@@ -16,6 +16,8 @@ interface FieldSpec {
   /** c0..c3 */
   colors: [string, string, string, string];
   body: string;
+  /** element whose box the shader aims at, passed as uniform a in 0..1 canvas coordinates (y up) */
+  anchor?: { selector: string; x: number; y: number };
 }
 
 /*
@@ -66,7 +68,35 @@ const PROOF: FieldSpec = {
     "gl_FragColor=vec4(col,1.);}",
 };
 
-const SPECS: Record<string, FieldSpec> = { hero: HERO, proof: PROOF };
+/*
+ * Footer: the hero's current at the end of the page. A few lanes start spread across the left and bend down into the
+ * lit house in the lower right, the way the logo's tunnel runs out of the door. Pulses travel toward home and warm to
+ * amber as they arrive. Kept faint above the lower third so the footer text keeps its contrast.
+ */
+const FOOTER: FieldSpec = {
+  colors: ["#9fc0bb", "#0c4243", "#08302f", "#f0b65a"],
+  anchor: { selector: ".fr-home", x: 16 / 32, y: 21 / 32 },
+  body:
+    "void main(){vec2 uv=gl_FragCoord.xy/r;float asp=r.x/r.y;vec2 p=vec2(uv.x*asp,uv.y);" +
+    "vec3 col=mix(c2,c1,.15+.35*fbm(p*1.2+vec2(t*.012,-t*.006)));" +
+    // a: the door of the house at the end of the footer's tunnel line
+    "float hx=a.x;float hy=a.y;float spread=mix(.55,1.,smoothstep(.6,1.6,asp));" +
+    "float s=clamp(uv.x/hx,0.,1.);float bend=s*s*(3.-2.*s);" +
+    "for(int i=0;i<7;i++){float fi=float(i);" +
+    "float y0=hy+(.12+fi*.1+.03*sin(fi*2.3))*spread;" +
+    "float y=mix(y0,hy,pow(bend,1.6))+.012*sin(uv.x*5.+t*.12+fi*1.7)*(1.-bend);" +
+    // distance in pixels so every lane stays a hairline at any canvas size
+    "float d=abs(uv.y-y)*r.y;float ln=exp(-d*d*.35)*step(uv.x,hx);" +
+    "float ph=fract(uv.x*1.1-t*.05+h(vec2(fi,5.)));float pk=exp(-pow((ph-.5)*7.,2.));" +
+    "float fade=mix(.45,1.,1.-smoothstep(.25,.75,y));" +
+    "col+=mix(c0,c3,bend*bend)*ln*(.05+.42*pk)*fade*smoothstep(0.,.15,uv.x);}" +
+    "float dh=length((p-vec2(hx*asp,hy))*vec2(1.,1.6));" +
+    "col+=c3*exp(-dh*dh*5.)*.2;" +
+    "col+=(h(mod(gl_FragCoord.xy,256.)+fract(t))-.5)*.018;" +
+    "gl_FragColor=vec4(col,1.);}",
+};
+
+const SPECS: Record<string, FieldSpec> = { hero: HERO, proof: PROOF, footer: FOOTER };
 
 function rgb(hex: string): [number, number, number] {
   const v = parseInt(hex.slice(1), 16);
@@ -115,6 +145,8 @@ function startField(cv: HTMLCanvasElement, spec: FieldSpec, reduceMq: MediaQuery
   });
   const uR = gl.getUniformLocation(pr, "r");
   const uT = gl.getUniformLocation(pr, "t");
+  const uA = gl.getUniformLocation(pr, "a");
+  const anchorEl = spec.anchor ? document.querySelector<Element>(spec.anchor.selector) : null;
 
   let visible = true;
   let lost = false;
@@ -127,6 +159,13 @@ function startField(cv: HTMLCanvasElement, spec: FieldSpec, reduceMq: MediaQuery
     cv.width = Math.max(1, Math.round(cv.clientWidth * dpr));
     cv.height = Math.max(1, Math.round(cv.clientHeight * dpr));
     gl.viewport(0, 0, cv.width, cv.height);
+    if (anchorEl && spec.anchor) {
+      const c = cv.getBoundingClientRect();
+      const b = anchorEl.getBoundingClientRect();
+      const x = (b.left + b.width * spec.anchor.x - c.left) / Math.max(1, c.width);
+      const y = 1 - (b.top + b.height * spec.anchor.y - c.top) / Math.max(1, c.height);
+      gl.uniform2f(uA, x, y);
+    }
   };
   const draw = (now: number): void => {
     gl.uniform2f(uR, cv.width, cv.height);

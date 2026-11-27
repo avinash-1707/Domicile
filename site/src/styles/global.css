@@ -162,9 +162,9 @@ p code, li code, dd code { background: rgb(12 66 67 / 0.08); padding: 1px var(--
 @keyframes labelIn { from { opacity: 0; translate: 0 4px; filter: blur(2px); } }
 .copy-icons { position: relative; width: 16px; height: 16px; }
 .copy-icons .icon { position: absolute; inset: 0; width: 16px; height: 16px; transition: opacity 300ms var(--ease-out), scale 300ms var(--ease-out), filter 300ms var(--ease-out); }
-.copy .i-done, .copy .i-fail { opacity: 0; scale: 0.25; filter: blur(4px); }
-.copy[data-state="done"] .i-copy, .copy[data-state="failed"] .i-copy { opacity: 0; scale: 0.25; filter: blur(4px); }
-.copy[data-state="done"] .i-done, .copy[data-state="failed"] .i-fail { opacity: 1; scale: 1; filter: none; }
+.copy .i-done, .copy .i-fail, .soc-copy .i-done, .soc-copy .i-fail { opacity: 0; scale: 0.25; filter: blur(4px); }
+.copy[data-state="done"] .i-copy, .copy[data-state="failed"] .i-copy, .soc-copy[data-state="done"] .i-copy, .soc-copy[data-state="failed"] .i-copy { opacity: 0; scale: 0.25; filter: blur(4px); }
+.copy[data-state="done"] .i-done, .copy[data-state="failed"] .i-fail, .soc-copy[data-state="done"] .i-done, .soc-copy[data-state="failed"] .i-fail { opacity: 1; scale: 1; filter: none; }
 .copy[data-state="failed"] { background: var(--cream); color: var(--bad); }
 @media (prefers-reduced-motion: reduce) { .copy-icons .icon { transition: opacity 150ms ease; scale: 1 !important; filter: none !important; } .copy:active { scale: 1; } .copy:hover .copy-icons { translate: none; } .copy[data-state] .copy-label { animation: none; } }
 
@@ -571,37 +571,66 @@ p code, li code, dd code { background: rgb(12 66 67 / 0.08); padding: 1px var(--
 .final-note { font-size: 14px; line-height: 20px; color: var(--teal-soft); }
 .final-note code { overflow-wrap: anywhere; }
 
-/* footer: the page ends at home, on a horizon with the light on */
-.footer { position: relative; background: var(--teal-deep); color: var(--cream); padding-bottom: var(--sp-7); overflow: hidden; }
-.footer::before { content: ""; position: absolute; inset: 0; pointer-events: none; background-image: radial-gradient(circle at 1px 1px, rgb(242 240 235 / 0.05) 1px, transparent 0), radial-gradient(420px 120px at 85% 120px, rgb(240 182 90 / 0.1), transparent 70%); background-size: 24px 24px, auto; }
-.footer-horizon { display: block; width: 100%; height: 140px; }
-.footer-horizon path, .footer-horizon rect, .footer-horizon ellipse, .footer-horizon circle { fill: none; stroke: var(--cream); stroke-width: 1.2; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
-.footer-horizon .fh-stars circle { fill: var(--cream); stroke: none; opacity: 0.5; }
-.footer-horizon .fh-hill { stroke-opacity: 0.25; }
-.footer-horizon .fh-ground { stroke-opacity: 0.6; }
-.footer-horizon .fh-tree * { stroke-opacity: 0.45; fill: var(--teal-deep); }
-.footer-horizon .fh-house path { fill: var(--teal-deep); stroke-opacity: 0.85; }
-.footer-horizon .fh-lamp { fill: var(--amber); stroke-opacity: 0.85; animation: glow-lamp 6s ease-in-out infinite alternate; }
-.footer-horizon .fh-pi { fill: #1f5d4b; }
-.footer-horizon .fh-tunnel { stroke: var(--amber); stroke-opacity: 0.7; stroke-dasharray: 6 6; animation: flow 1.6s linear infinite; }
-@keyframes glow-lamp { to { fill-opacity: 0.75; } }
-@media (prefers-reduced-motion: reduce) { .footer-horizon .fh-lamp, .footer-horizon .fh-tunnel { animation: none; } }
-.footer-grid { position: relative; display: grid; gap: var(--sp-8); padding-top: var(--sp-8); }
-@media (min-width: 960px) { .footer-grid { grid-template-columns: 5fr 6fr; gap: var(--sp-9); align-items: start; } }
-.footer-by { font-family: var(--display); font-weight: 400; font-size: 48px; line-height: 1.1; letter-spacing: -0.012em; }
-@media (min-width: 960px) { .footer-by { font-size: 60px; } }
-.footer-text { margin-top: var(--sp-4); max-width: 440px; color: var(--teal-soft); }
-.footer-links { display: grid; --ind-bg: rgb(242 240 235 / 0.07); --ind-radius: 10px; border-top: 1px solid rgb(159 192 187 / 0.18); }
-.fl-row { display: flex; align-items: center; gap: var(--sp-2); border-bottom: 1px solid rgb(159 192 187 / 0.18); }
-.fl-row > a { flex: 1; min-width: 0; display: grid; grid-template-columns: 20px 104px minmax(0, 1fr); align-items: center; gap: var(--sp-4); padding: var(--sp-4) var(--sp-3); border-radius: 10px; text-decoration: none; font-size: 18px; line-height: 28px; }
-.fl-row .icon { color: var(--teal-soft); transition: color 150ms ease; }
-.fl-row .fl-detail { color: var(--teal-soft); font-family: var(--mono); font-size: 14px; line-height: 20px; overflow-wrap: anywhere; transition: color 150ms ease; }
-@media (hover: hover) { .fl-row > a:hover .icon { color: var(--amber); } .fl-row > a:hover .fl-detail { color: var(--cream); } }
-.copy-mini { position: relative; z-index: 1; margin-right: var(--sp-2); padding: var(--sp-1) var(--sp-3); font-size: 14px; background: transparent; color: var(--teal-soft); border: 1px solid rgb(159 192 187 / 0.3); }
-@media (hover: hover) { .copy-mini:hover { color: var(--cream); border-color: rgb(159 192 187 / 0.6); } }
-.copy-mini[data-state="done"] { background: #9fd8a8; color: var(--teal-deep); border-color: #9fd8a8; }
-@media (max-width: 520px) { .fl-row > a { grid-template-columns: 20px minmax(0, 1fr); } .fl-row .fl-label { display: none; } }
-.footer-base { position: relative; display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--sp-3) var(--sp-5); margin-top: var(--sp-8); padding-top: var(--sp-5); border-top: 1px solid rgb(159 192 187 / 0.12); font-size: 14px; line-height: 20px; color: var(--teal-soft); }
+/* footer: the page ends at home. A shader current runs toward the lit house in the corner, and the logo's own
+   tunnel line runs the width of the page into a second, larger house above the base line. */
+.footer { position: relative; isolation: isolate; background-color: var(--teal-deep); color: var(--cream); padding-top: var(--sp-10); padding-bottom: var(--sp-6); overflow: hidden;
+  background-image: radial-gradient(520px 260px at 92% 100%, rgb(240 182 90 / 0.12), transparent 70%), radial-gradient(70% 60% at 10% 0%, rgb(12 66 67 / 0.9), transparent 70%); }
+.footer > .wrap { position: relative; z-index: 1; }
+@media (min-width: 900px) { .footer { padding-top: 120px; } }
+.footer .wm-door { fill: var(--teal-deep); }
+.footer-grid { display: grid; gap: var(--sp-8) var(--sp-6); grid-template-columns: 1fr 1fr; }
+.footer-brand { grid-column: 1 / -1; display: grid; justify-items: start; align-content: start; }
+@media (min-width: 900px) { .footer-grid { grid-template-columns: minmax(0, 6fr) minmax(0, 2fr) minmax(0, 2fr); gap: var(--sp-9); } .footer-brand { grid-column: auto; } }
+.footer-mark { font-size: 40px; line-height: 44px; gap: var(--sp-3); }
+.footer-mark svg { width: 44px; height: 44px; }
+@media (min-width: 900px) { .footer-mark { font-size: 48px; line-height: 52px; } .footer-mark svg { width: 52px; height: 52px; } }
+.footer-text { margin-top: var(--sp-5); max-width: 480px; font-size: 18px; line-height: 28px; color: var(--cream); }
+.footer-by { margin-top: var(--sp-3); max-width: 480px; font-size: 15px; line-height: 22px; color: var(--teal-soft); }
+
+/* icon-only socials: one sliding highlight shared across the row, a label tip above each */
+.socials { display: flex; flex-wrap: wrap; gap: var(--sp-1); margin-top: var(--sp-6); margin-left: calc(-1 * var(--sp-2)); --ind-bg: rgb(242 240 235 / 0.1); --ind-radius: 12px; }
+.soc { position: relative; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 12px; background: transparent; color: var(--teal-soft); cursor: pointer; text-decoration: none; transition: color 150ms ease, scale 150ms var(--ease-out); }
+.soc .icon { width: 22px; height: 22px; }
+.soc:active { scale: 0.96; }
+.soc-copy { margin-left: var(--sp-2); }
+.soc-copy::before { content: ""; position: absolute; left: calc(-1 * var(--sp-1) - 1px); top: 12px; bottom: 12px; width: 1px; background: rgb(159 192 187 / 0.25); }
+.soc .tip { position: absolute; bottom: calc(100% + 6px); left: 50%; translate: -50% 4px; padding: var(--sp-1) var(--sp-2); border-radius: 6px; background: var(--cream); color: var(--teal-deep); font: 600 12px/16px var(--sans); white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 150ms ease, translate 150ms var(--ease-out); }
+.soc:focus-visible .tip, .soc-copy[data-state="done"] .tip, .soc-copy[data-state="failed"] .tip { opacity: 1; translate: -50% 0; }
+.soc:focus-visible, .soc-copy[data-state="done"] { color: var(--cream); }
+@media (hover: hover) {
+  .soc:hover { color: var(--cream); }
+  .soc:hover .tip { opacity: 1; translate: -50% 0; transition-delay: 80ms; }
+}
+.soc-copy[data-state="done"] { color: #9fd8a8; }
+.soc-copy[data-state="done"] .tip { background: #9fd8a8; }
+.soc-copy[data-state="failed"] { color: #ef8d7f; }
+.soc-copy .copy-icons .icon { width: 20px; height: 20px; }
+.soc-copy .copy-icons { width: 20px; height: 20px; }
+.soc-copy .copy-label { min-width: 0; }
+@media (prefers-reduced-motion: reduce) { .soc { transition: color 150ms ease; } .soc:active { scale: 1; } .soc .tip { transition: opacity 150ms ease; translate: -50% 0; } }
+
+.footer-col-title { font-size: 14px; line-height: 20px; color: var(--teal-soft); }
+.footer-col ul { list-style: none; margin: var(--sp-3) 0 0; padding: 0; display: grid; }
+.footer-col a { display: inline-block; padding-block: var(--sp-2); font-size: 16px; line-height: 24px; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 5px; text-decoration-thickness: 1px; border-radius: 4px; transition: text-decoration-color 150ms ease; }
+@media (hover: hover) { .footer-col a:hover { text-decoration-color: var(--amber); } }
+
+/* the logo's tunnel, stretched across the page. Line centre and weight are the mark's own: y 27.5 and stroke 3 of 32 */
+.footer-route { --m: 48px; display: flex; align-items: flex-start; margin-top: var(--sp-10); }
+@media (min-width: 900px) { .footer-route { --m: 64px; margin-top: 120px; } }
+.fr-line { flex: 1; height: calc(var(--m) * 3 / 32); margin-top: calc(var(--m) * 26 / 32); margin-right: calc(var(--m) * -6 / 32); border-radius: 99px; transform-origin: left center;
+  background: linear-gradient(to right, rgb(240 182 90 / 0), rgb(240 182 90 / 0.35) 30%, var(--amber)); }
+.fr-home { width: var(--m); height: var(--m); flex: none; position: relative; fill: var(--cream); stroke: var(--cream); stroke-width: 1.5; stroke-linejoin: round; overflow: visible; }
+.fr-home .wm-door { fill: var(--amber); stroke: none; }
+.fr-home .wm-tube { fill: none; stroke: var(--amber); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+/* plays once: the line draws toward the house, then the light comes on */
+.will-play .fr-line { scale: 0 1; transition: scale 1200ms cubic-bezier(0.65, 0, 0.35, 1); }
+.will-play .fr-home { opacity: 0; translate: 0 8px; transition: opacity 500ms var(--ease-out) 700ms, translate 500ms var(--ease-out) 700ms; }
+.will-play .fr-home .wm-door { fill: var(--teal-deep); transition: fill 400ms ease 1200ms; }
+.will-play.played .fr-line { scale: 1 1; }
+.will-play.played .fr-home { opacity: 1; translate: 0 0; }
+.will-play.played .fr-home .wm-door { fill: var(--amber); }
+
+.footer-base { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--sp-3) var(--sp-5); padding-top: var(--sp-5); border-top: 1px solid rgb(159 192 187 / 0.16); font-size: 14px; line-height: 20px; color: var(--teal-soft); }
 .footer-base a { color: var(--cream); text-underline-offset: 4px; text-decoration-color: rgb(240 182 90 / 0.6); border-radius: 4px; }
 
 /* 404 */
@@ -640,8 +669,10 @@ main:focus { outline: none; }
   .fit-col ul, .limits ul { gap: var(--sp-2); }
   .limits { margin-top: var(--sp-7); }
   .final-inner { gap: var(--sp-5); }
-  .footer-grid { gap: var(--sp-6); padding-top: var(--sp-6); }
-  .fl-row > a { padding-block: var(--sp-3); }
-  .footer-base { margin-top: var(--sp-6); }
+  .footer { padding-top: var(--sp-9); }
+  .footer-mark { font-size: 36px; line-height: 40px; }
+  .footer-mark svg { width: 40px; height: 40px; }
+  .footer-text { font-size: 17px; line-height: 26px; }
+  .footer-route { margin-top: var(--sp-9); }
   .console { padding: var(--sp-4); gap: var(--sp-4); }
 }
