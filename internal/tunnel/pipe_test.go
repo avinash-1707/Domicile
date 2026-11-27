@@ -450,12 +450,18 @@ func TestPipeTCPToTCP(t *testing.T) {
 		}
 	})
 	t.Run("destination reset", func(t *testing.T) {
+		// Resetting before the dial returns can fail the dial itself on
+		// Linux (the RST lands before Go reads the connect result), so the
+		// destination waits until the connection is handed over.
+		dialled := make(chan struct{})
 		addr := tcpServer(t, func(c *net.TCPConn) {
+			<-dialled
 			c.Write([]byte("partial"))
 			c.SetLinger(0)
 			c.Close()
 		})
 		client, dst := tcpPair(t, addr)
+		close(dialled)
 		done := make(chan error, 1)
 		go func() {
 			done <- tunnel.Pipe(context.Background(), tunnel.TCPStream(dst, stallTimeout), client.server, stallTimeout)
