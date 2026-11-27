@@ -1,0 +1,31 @@
+---
+import Icon from "./Icon.astro";
+
+interface Props {
+  /** Lines shown in the block. Lines starting with "#" render as comments and are left out of the copied text. */
+  lines: string[];
+  label: string;
+  tone?: "dark" | "light";
+  size?: "lg" | "md";
+}
+const { lines, label, tone = "dark", size = "md" } = Astro.props;
+const copyText = lines.filter((l) => !l.startsWith("#")).join("\n");
+---
+<div class:list={["cmd", `cmd-${tone}`, `cmd-${size}`]}>
+  <pre tabindex="0" aria-label={label}><code>{lines.map((l) => (
+    l.startsWith("#")
+      ? <span class="c-comment">{l}</span>
+      : <span class="c-line"><span class="c-prompt" aria-hidden="true">$ </span>{l.split("/").map((part, i) => (
+          // a break opportunity after each path slash, so wrapped commands split at path boundaries
+          <>{i > 0 && "/"}{i > 0 && part !== "" && <wbr />}{part}</>
+        ))}</span>
+  ))}</code></pre>
+  <button type="button" class="copy" data-copy={copyText} aria-label={`Copy: ${label}`}>
+    <span class="copy-icons" aria-hidden="true">
+      <Icon name="copy" class="i-copy" />
+      <Icon name="check" class="i-done" />
+      <Icon name="warning" class="i-fail" />
+    </span>
+    <span class="copy-label">Copy</span>
+  </button>
+</div>

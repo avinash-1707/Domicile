@@ -1,0 +1,541 @@
+---
+import "../styles/global.css";
+import Scene from "../components/Scene.astro";
+import Command from "../components/Command.astro";
+import Icon from "../components/Icon.astro";
+
+const repo = "https://github.com/avinash-1707/domicile";
+const install = "curl -fsSL https://raw.githubusercontent.com/avinash-1707/domicile/main/install.sh | sh";
+const title = "domicile: a home network exit for agents on a VPS";
+const description =
+  "domicile sends the domains you choose through a device on your home connection, so an agent running on a VPS browses from a residential IP. Everything else leaves from the VPS. Free, Apache-2.0, Linux and macOS.";
+const canonical = new URL("/", Astro.site).href;
+
+// Tool table mirrors README.md "Connect your agent's tools".
+const tools = [
+  {
+    id: "playwright",
+    name: "Playwright MCP",
+    cmd: "domicile connect playwright-mcp",
+    does: "Writes a Playwright config with the proxy and prints the claude mcp add command. Pass -file .mcp.json to edit an MCP client file instead.",
+    effect: {
+      title: "What connect changes",
+      target: "A Playwright config, or .mcp.json with -file",
+      rows: [
+        ["Proxy", "127.0.0.1:1080, on loopback by default"],
+        ["Credential", "Its own, so you can revoke this tool without touching the others"],
+        ["Run again", "Reuses the password; -rotate issues a new one"],
+        ["Undo", "-undo restores the file byte for byte, with its original permissions, and revokes the credential"],
+      ],
+    },
+  },
+  {
+    id: "agent-browser",
+    name: "agent-browser",
+    cmd: "domicile connect agent-browser",
+    does: "Sets the proxy in ~/.agent-browser/config.json.",
+    effect: {
+      title: "What connect changes",
+      target: "~/.agent-browser/config.json",
+      rows: [
+        ["Proxy", "127.0.0.1:1080, on loopback by default"],
+        ["Credential", "Its own, so you can revoke this tool without touching the others"],
+        ["Run again", "Reuses the password; -rotate issues a new one"],
+        ["Undo", "-undo restores the file byte for byte, with its original permissions, and revokes the credential"],
+      ],
+    },
+  },
+  {
+    id: "shell",
+    name: "curl, Python, Go",
+    cmd: "domicile connect shell",
+    does: "Writes ALL_PROXY, HTTPS_PROXY and NO_PROXY exports to a private file you source. Most CLIs pick them up.",
+    effect: {
+      title: "What connect changes",
+      target: "A private file you source",
+      rows: [
+        ["Proxy", "127.0.0.1:1080, on loopback by default"],
+        ["Credential", "Its own, so you can revoke this tool without touching the others"],
+        ["Run again", "Reuses the password; -rotate issues a new one"],
+        ["Undo", "-undo restores the file byte for byte, with its original permissions, and revokes the credential"],
+      ],
+    },
+  },
+  {
+    id: "run",
+    name: "Anything else",
+    cmd: "domicile run -- node agent.js",
+    does: "Runs the command with the proxy in its environment, including Node's built-in fetch on Node 22.21+ or 24+.",
+    effect: {
+      title: "What run changes",
+      target: "The command's environment",
+      rows: [
+        ["Proxy", "127.0.0.1:1080, on loopback by default"],
+        ["Scope", "Only the command you run"],
+        ["Node", "Built-in fetch picks it up on Node 22.21+ or 24+"],
+      ],
+    },
+  },
+];
+
+const steps = [
+  {
+    where: "On the VPS",
+    title: "Set up the server",
+    text: "Create the state, get a one-time join code for the home device, add your first rule and start the server.",
+    lines: [
+      "domicile init -public-addr vps.example.com:443",
+      "domicile add home",
+      "domicile rule add reddit.com -via home",
+      "domicile server",
+    ],
+  },
+  {
+    where: "At home",
+    title: "Pair the home device",
+    text: "Install on a Raspberry Pi or an old laptop that stays on, then paste the join code. It dials out, so you open no ports.",
+    lines: ["domicile agent join <join-code>"],
+  },
+  {
+    where: "On the VPS",
+    title: "Check the exit",
+    text: "Confirm the device is connected and see what sites see through it.",
+    lines: ["domicile status", "domicile verify"],
+  },
+  {
+    where: "On the VPS",
+    title: "Point your agent at it",
+    text: "The connect command writes the proxy setting into your tool with its own credential. Requests to reddit.com now leave from home.",
+    lines: ["domicile connect playwright-mcp"],
+  },
+];
+
+const footerLinks = [
+  { href: repo, label: "GitHub", detail: "avinash-1707/domicile", icon: "github" },
+  { href: "https://avnsh.me", label: "Portfolio", detail: "avnsh.me", icon: "globe" },
+  { href: "https://x.com/ayyvinash", label: "X", detail: "@ayyvinash", icon: "x" },
+  { href: "https://www.linkedin.com/in/avinash-narwariya/", label: "LinkedIn", detail: "avinash-narwariya", icon: "linkedin" },
+  { href: "mailto:avinashnarwariya5@gmail.com", label: "Email", detail: "avinashnarwariya5@gmail.com", icon: "mail" },
+] as const;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="theme-color" content="#0c4243" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content="https://raw.githubusercontent.com/avinash-1707/domicile/main/.github/assets/banner.webp" />
+    <meta property="og:image:alt" content="A server in a datacenter sends most traffic straight to websites, while one route runs through a tunnel to a small device in a house." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:creator" content="@ayyvinash" />
+    <link rel="preload" href="/fonts/newsreader-latin-var.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/archivo-latin-var.woff2" as="font" type="font/woff2" crossorigin />
+    <script is:inline>
+      (function () {
+        var root = document.documentElement;
+        if (!matchMedia("(prefers-reduced-motion: reduce)").matches) root.classList.add("reveal-ready");
+        // failsafe: if the page script never runs, show everything instead of leaving it hidden
+        setTimeout(function () {
+          if (!root.classList.contains("js-live")) root.classList.remove("reveal-ready");
+        }, 2500);
+      })();
+    </script>
+    <noscript><style>[data-reveal]{opacity:1!important;transform:none!important;filter:none!important;clip-path:none!important}</style></noscript>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <div class="grain" aria-hidden="true"></div>
+
+    <header class="hero" id="top">
+      <div class="hero-top">
+      <canvas class="field" data-field="hero" aria-hidden="true"></canvas>
+      <nav class="nav wrap" aria-label="Main">
+        <a class="wordmark" href="#top" aria-label="domicile, back to top">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><path class="wm-house" d="M3.5 14.5 16 3l12.5 11.5v9.5h-25z" /><path class="wm-door" d="M13.5 16.5h5v9h-5z" /><path class="wm-tube" d="M16 19.5V27.5H6" /></svg>
+          <span>domicile</span>
+        </a>
+        <div class="nav-links" data-indicator-group>
+          <span class="ind" aria-hidden="true"></span>
+          <a href="#how" data-ind-item>How it works</a>
+          <a href="#setup" data-ind-item>Set up</a>
+          <a href="#proof" data-ind-item>Verify</a>
+          <a href="#safety" data-ind-item>Safety</a>
+        </div>
+        <a class="nav-gh" href={repo}>
+          <Icon name="github" />
+          <span>GitHub</span>
+        </a>
+      </nav>
+
+      <div class="hero-copy wrap">
+        <h1 data-reveal="words"><span class="line">Your agent lives on a VPS.</span> <span class="line">Let it browse from home.</span></h1>
+        <div class="hero-side" data-reveal-stagger>
+          <p class="lede" data-reveal="blur">
+            When sites block your VPS's datacenter IP, domicile sends just those domains through a device on your home connection. LLM API calls, git, SSH and everything else still leave from the VPS.
+          </p>
+          <div class="install" data-reveal="blur">
+            <p class="cmd-caption">Run it on the VPS and on the home device. Free and open source, Apache-2.0, Linux and macOS.</p>
+            <div class="install-row">
+              <Command lines={[install]} label="Install command" size="lg" />
+              <a class="link-gh" href={repo}><Icon name="github" />View on GitHub</a>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+
+      <div class="stage" data-reveal="scale">
+        <div class="scene-wrap" data-scene>
+          <Scene />
+        </div>
+        <div class="console wrap">
+          <div class="rules" role="group" aria-labelledby="rules-label">
+            <p id="rules-label" class="console-label">Try it: toggle a rule, or take the home exit offline</p>
+            <div class="chips" data-indicator-group>
+              <span class="ind" aria-hidden="true"></span>
+              <button type="button" class="chip" data-ind-item data-rule="reddit.com" aria-pressed="true"><span class="chip-dot" aria-hidden="true"></span>reddit.com</button>
+              <button type="button" class="chip" data-ind-item data-rule="linkedin.com" aria-pressed="true"><span class="chip-dot" aria-hidden="true"></span>linkedin.com</button>
+              <button type="button" class="chip" data-ind-item data-rule="x.com" aria-pressed="false"><span class="chip-dot" aria-hidden="true"></span>x.com</button>
+            </div>
+            <label class="exit-toggle">
+              <button type="button" class="tog" role="switch" aria-checked="true" id="exit-switch" aria-labelledby="exit-switch-label"><span class="thumb"></span></button>
+              <span id="exit-switch-label">Home exit</span>
+            </label>
+          </div>
+          <div class="log" aria-hidden="true">
+            <p class="console-label">Server log</p>
+            <ol class="log-lines" data-log></ol>
+          </div>
+          <p class="sr-only" aria-live="polite" data-status></p>
+        </div>
+      </div>
+    </header>
+
+    <main id="main" tabindex="-1">
+      <section class="problem section" aria-labelledby="problem-h">
+        <div class="wrap split">
+          <div>
+            <h2 id="problem-h" data-reveal="blur">Works on your laptop. Blocked on your VPS.</h2>
+            <p data-reveal="rise">
+              An agent that runs around the clock on a VPS browses from a datacenter IP. Many sites score the IP's network before they look at the browser, so the same script that works on your laptop gets CAPTCHAs, 403s or a refused login from the server.
+            </p>
+            <p data-reveal="rise">
+              Patching the browser fingerprint does not help when the decision is made at the network layer.
+            </p>
+          </div>
+          <figure class="compare" data-reveal="rise">
+            <table class="cmp">
+              <thead>
+                <tr><th scope="col"><span class="sr-only">Request</span></th><th scope="col">From your laptop</th><th scope="col">From your VPS</th></tr>
+              </thead>
+              <tbody>
+                <tr><th scope="row">GET reddit.com/<wbr />message/<wbr />inbox</th><td class="ok">200</td><td class="bad">403</td></tr>
+                <tr><th scope="row">POST linkedin.com/<wbr />login</th><td class="ok">200</td><td class="bad">refused</td></tr>
+                <tr><th scope="row">GET reddit.com/<wbr />r/<wbr />selfhosted</th><td class="ok">200</td><td class="bad">CAPTCHA</td></tr>
+              </tbody>
+            </table>
+            <figcaption>Illustration: the same requests, sent from each network.</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="tagline section" aria-label="What changes">
+        <p class="wrap tagline-text" data-tagline>
+          Your agent stays on the VPS. Only the sites you name see your home connection.
+        </p>
+      </section>
+
+      <section class="how section" id="how" aria-labelledby="how-h">
+        <div class="wrap">
+          <h2 id="how-h" data-reveal="blur">How it works</h2>
+          <p class="section-lede" data-reveal="rise">A proxy on the VPS checks each connection against your rules. Matched ones go home through the tunnel. The rest go out directly, as they do today.</p>
+          <figure class="flow" data-draw aria-label="Diagram: your agent's browser connects to the domicile proxy on the VPS. If a rule matches, the connection goes through the tunnel to your home device and then to the site. If not, it goes directly from the VPS to the site.">
+            <svg class="flow-wide" viewBox="0 0 960 220" aria-hidden="true">
+              <defs>
+                <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L8 4L0 8Z" class="arr" /></marker>
+                <pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path d="M0 0V6" class="hatch" /></pattern>
+              </defs>
+              <g class="fl-node"><rect x="8" y="80" width="150" height="56" rx="8" /><text x="83" y="104">agent browser</text><text x="83" y="122" class="fl-sub">Playwright, curl</text></g>
+              <g class="fl-node fl-key"><rect x="214" y="72" width="176" height="72" rx="8" /><rect x="214" y="72" width="176" height="72" rx="8" fill="url(#hatch)" /><text x="302" y="100">domicile proxy</text><text x="302" y="120" class="fl-sub">127.0.0.1:1080</text></g>
+              <g class="fl-node"><path d="M482 108l40-36l40 36l-40 36Z" /><text x="522" y="112" class="fl-small">rule?</text></g>
+              <g class="fl-node fl-home"><rect x="614" y="12" width="196" height="56" rx="8" /><text x="712" y="36">home device</text><text x="712" y="54" class="fl-sub">resolves DNS, dials site</text></g>
+              <g class="fl-node"><rect x="830" y="80" width="122" height="56" rx="8" /><text x="891" y="112">the site</text></g>
+              <path class="fl-edge" d="M158 108H210" marker-end="url(#arr)" />
+              <path class="fl-edge" d="M390 108H478" marker-end="url(#arr)" />
+              <path class="fl-edge fl-tunnel" d="M522 72V40H610" marker-end="url(#arr)" />
+              <path class="fl-edge fl-tunnel" d="M810 40H891V76" marker-end="url(#arr)" />
+              <path class="fl-edge" d="M522 144V184H891V140" marker-end="url(#arr)" />
+              <text x="530" y="64" class="fl-lbl">match</text>
+              <text x="700" y="204" class="fl-lbl">no match: direct from the VPS</text>
+            </svg>
+            <svg class="flow-tall" viewBox="0 0 320 500" aria-hidden="true">
+              <defs>
+                <marker id="arr-t" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L8 4L0 8Z" class="arr" /></marker>
+                <pattern id="hatch-t" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path d="M0 0V6" class="hatch" /></pattern>
+              </defs>
+              <g class="fl-node"><rect x="70" y="8" width="180" height="52" rx="8" /><text x="160" y="31">agent browser</text><text x="160" y="49" class="fl-sub">Playwright, curl</text></g>
+              <g class="fl-node fl-key"><rect x="60" y="90" width="200" height="60" rx="8" /><rect x="60" y="90" width="200" height="60" rx="8" fill="url(#hatch-t)" /><text x="160" y="116">domicile proxy</text><text x="160" y="136" class="fl-sub">127.0.0.1:1080</text></g>
+              <g class="fl-node"><path d="M122 214L160 176L198 214L160 252Z" /><text x="160" y="218" class="fl-small">rule?</text></g>
+              <g class="fl-node fl-home"><rect x="40" y="304" width="220" height="56" rx="8" /><text x="150" y="328">home device</text><text x="150" y="346" class="fl-sub">resolves DNS, dials site</text></g>
+              <g class="fl-node"><rect x="70" y="424" width="170" height="52" rx="8" /><text x="155" y="455">the site</text></g>
+              <path class="fl-edge" d="M160 60V86" marker-end="url(#arr-t)" />
+              <path class="fl-edge" d="M160 150V172" marker-end="url(#arr-t)" />
+              <path class="fl-edge fl-tunnel" d="M160 252V300" marker-end="url(#arr-t)" />
+              <path class="fl-edge fl-tunnel" d="M155 360V420" marker-end="url(#arr-t)" />
+              <path class="fl-edge" d="M198 214H296V450H244" marker-end="url(#arr-t)" />
+              <text x="168" y="282" class="fl-lbl">match</text>
+              <text x="206" y="206" class="fl-lbl">no match</text>
+            </svg>
+          </figure>
+          <ul class="points" data-reveal-stagger>
+            <li data-reveal="dock">
+              <h3>Home dials out</h3>
+              <p>The device at home opens a QUIC connection to your VPS and pins the server's certificate from the join code. Nothing listens at home, so you open no ports on your router.</p>
+            </li>
+            <li data-reveal="dock">
+              <h3>Rules pick the domains</h3>
+              <p>A rule sends a domain and its subdomains through home. The first match wins. A domain with no rule leaves from the VPS, so LLM API calls, git and SSH are untouched.</p>
+            </li>
+            <li data-reveal="dock">
+              <h3>DNS resolves at home too</h3>
+              <p>For a routed domain, the home device looks up the name and connects to the site itself, so the lookup does not come from the datacenter either.</p>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="setup section band-teal" id="setup" aria-labelledby="setup-h">
+        <div class="wrap">
+          <h2 id="setup-h" data-reveal="blur">Set up in two minutes</h2>
+          <p class="section-lede" data-reveal="rise">Install with the one line above on both machines, then run these four steps.</p>
+          <ol class="steps" data-steps>
+            {steps.map((s, i) => (
+              <li class="step" data-reveal="rise">
+                <span class="step-n" aria-hidden="true">{i + 1}</span>
+                <div class="step-body">
+                  <p class="step-where">{s.where}</p>
+                  <h3>{s.title}</h3>
+                  <p>{s.text}</p>
+                </div>
+                <Command lines={s.lines} label={`Step ${i + 1}: ${s.title}`} />
+              </li>
+            ))}
+          </ol>
+          <p class="setup-note" data-reveal="rise">To keep both sides running across reboots, <code>domicile service install server</code> on the VPS and <code>domicile service install agent</code> at home write a systemd unit or a launchd agent.</p>
+        </div>
+      </section>
+
+      <section class="tools section" id="tools" aria-labelledby="tools-h">
+        <div class="wrap">
+          <h2 id="tools-h" data-reveal="blur">Works with the tools your agent already uses</h2>
+          <p class="section-lede" data-reveal="rise">Most agent browsers already accept a proxy. <code>domicile connect</code> writes the setting for you, gives each tool its own credential, and <code>-undo</code> restores the file byte for byte.</p>
+          <div class="tabs" data-tabs data-reveal="rise">
+            <div class="tablist" role="tablist" aria-label="Tools" data-indicator-group>
+              <span class="ind" aria-hidden="true"></span>
+              {tools.map((t, i) => (
+                <button type="button" role="tab" id={`tab-${t.id}`} aria-controls={`panel-${t.id}`} aria-selected={i === 0 ? "true" : "false"} tabindex={i === 0 ? 0 : -1} data-ind-item>{t.name}</button>
+              ))}
+            </div>
+            {tools.map((t, i) => (
+              <div class="tabpanel" role="tabpanel" id={`panel-${t.id}`} aria-labelledby={`tab-${t.id}`} hidden={i !== 0}>
+                <div class="tp-main">
+                  <Command lines={[t.cmd]} label={`Connect ${t.name}`} tone="light" />
+                  <p>{t.does}</p>
+                </div>
+                <div class="tp-effect">
+                  <p class="tp-title">{t.effect.title}</p>
+                  <p class="tp-target">{t.effect.target}</p>
+                  <dl>
+                    {t.effect.rows.map(([k, v]) => (
+                      <div><dt>{k}</dt><dd>{v}</dd></div>
+                    ))}
+                  </dl>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div class="mcp">
+            <div data-reveal="rise">
+              <h3 class="h-feature">Your agent can ask for a rule. You add it.</h3>
+              <p><code>domicile mcp</code> is a stdio MCP server with four read-only tools. Through it an agent can check which exit it is on, run verify, list blocked hosts and report a site that blocked it. A report becomes a suggested command for you to run. The agent cannot change routing.</p>
+              <Command lines={["claude mcp add domicile -- domicile mcp"]} label="Add the MCP server to Claude Code" tone="light" />
+            </div>
+            <ol class="exchange" data-reveal-stagger aria-label="Example exchange">
+              <li class="ex ex-agent" data-reveal="dock">
+                <p class="ex-who">Agent calls <code>report_blocked</code></p>
+                <p class="ex-body">linkedin.com answered 403 on the login page, going direct from the VPS.</p>
+              </li>
+              <li class="ex ex-tool" data-reveal="dock">
+                <p class="ex-who"><code>blocked_hosts</code> suggests</p>
+                <p class="ex-body mono">domicile rule add linkedin.com -via home</p>
+              </li>
+              <li class="ex ex-you" data-reveal="dock">
+                <p class="ex-who">You decide</p>
+                <p class="ex-body">Run the command yourself, or leave it. Nothing changes until you do.</p>
+              </li>
+            </ol>
+          </div>
+        </div>
+      </section>
+
+      <section class="proof section band-wine" id="proof" aria-labelledby="proof-h">
+        <canvas class="field" data-field="proof" aria-hidden="true"></canvas>
+        <div class="wrap proof-grid">
+          <div>
+            <h2 id="proof-h" data-reveal="blur">See what sites see</h2>
+            <p data-reveal="rise"><code>domicile verify</code> sends requests straight through each exit and tells you what sites see: the public IP compared with the VPS's own, whether the network is listed as residential or hosting, where DNS was resolved, the exit's timezone and how long the first request took.</p>
+            <dl class="codes" data-reveal-stagger>
+              <div data-reveal="rise"><dt>0</dt><dd>every check passed</dd></div>
+              <div data-reveal="rise"><dt>1</dt><dd>a check failed</dd></div>
+              <div data-reveal="rise"><dt>3</dt><dd>verify could not run</dd></div>
+              <div data-reveal="rise"><dt>5</dt><dd>inconclusive: the IP or DNS comparison could not be measured</dd></div>
+            </dl>
+            <p class="small" data-reveal="rise">Exit codes make it a health check for cron and CI. Add <code>-json</code> for a machine-readable report.</p>
+          </div>
+          <figure class="term" data-type aria-label="Sample output of domicile verify">
+            <div class="term-bar" aria-hidden="true"><span></span><span></span><span></span><p>vps ~ domicile verify</p></div>
+            <pre class="term-out"><code><span class="tl">home  <b class="pass">PASS</b></span><span class="tl">  <b class="pass">ok</b>    exit ip   203.0.113.48, not the VPS's 198.51.100.12</span><span class="tl">  <b class="pass">ok</b>    network   Hathway Cable (AS17488), looks residential</span><span class="tl">                  (best-effort hint from ip-api.com)</span><span class="tl">  <b class="pass">ok</b>    dns       resolved on the exit side by 203.0.113.53,</span><span class="tl">                  not the VPS's resolver in Frankfurt</span><span class="tl">  <b class="info">info</b>  timezone  exit is in Asia/Kolkata; launch browsers</span><span class="tl">                  with timezone Asia/Kolkata so it matches</span><span class="tl">  <b class="info">info</b>  tunnel    first request through the exit took 184 ms</span><span class="tl caret-line"><span class="prompt">$ </span>echo $?</span><span class="tl">0</span></code></pre>
+            <figcaption>Sample output. Addresses are from documentation ranges.</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="safety section" id="safety" aria-labelledby="safety-h">
+        <div class="wrap">
+          <div class="safety-head">
+            <div>
+              <h2 id="safety-h" data-reveal="blur">Safe by default</h2>
+              <p class="section-lede" data-reveal="rise">The defaults assume an agent on the VPS might misbehave, so the risky options stay off until you turn them on.</p>
+            </div>
+            <figure class="lan" data-draw aria-label="Diagram: the home device can reach the internet, but not the router, laptop or other devices on your home network.">
+              <svg viewBox="0 0 420 200" aria-hidden="true">
+                <path class="lan-wire" d="M60 156H384" />
+                <g class="lan-dev lan-pi"><rect x="36" y="120" width="56" height="28" rx="4" /><path d="M44 120v-5M50 120v-5M56 120v-5M62 120v-5M68 120v-5M74 120v-5M80 120v-5" /><text x="64" y="172">exit device</text></g>
+                <path class="lan-up" d="M64 118V40H150" />
+                <g class="lan-net"><rect x="150" y="20" width="96" height="40" rx="6" /><text x="198" y="45">internet</text></g>
+                <g class="lan-dev lan-blocked"><rect x="190" y="126" width="58" height="22" rx="4" /><path d="M200 126v-12M238 126v-12" /><text x="219" y="172">router</text></g>
+                <g class="lan-dev lan-blocked"><rect x="282" y="122" width="44" height="26" rx="3" /><path d="M276 150h56" /><text x="304" y="172">laptop</text></g>
+                <g class="lan-dev lan-blocked"><rect x="352" y="116" width="32" height="32" rx="3" /><path d="M358 126h20M358 134h20" /><text x="368" y="172">NAS</text></g>
+                <path class="lan-fence" d="M130 100V190M124 104h12M124 120h12M124 136h12M124 152h12M124 168h12M124 184h12" />
+                <text x="138" y="98" class="lan-lbl">deny</text>
+              </svg>
+            </figure>
+          </div>
+          <ul class="rules-list" data-reveal-stagger>
+            <li data-reveal="rise"><h3>Loopback proxy, one credential per tool</h3><p>The proxy listens on 127.0.0.1 and every client needs a credential. Each connected tool gets its own, so you can revoke one without touching the others.</p></li>
+            <li data-reveal="rise"><h3>Your home network is refused by default</h3><p>The home agent refuses private, loopback, link-local and cloud metadata addresses, checked after DNS resolution, so an agent on the VPS cannot use the exit to reach your router or other devices. Treat this as a backstop: for a hard boundary, run the device on a guest network or VLAN.</p></li>
+            <li data-reveal="rise"><h3>Fails closed</h3><p>When the home exit is offline, matched traffic is refused instead of leaving from the datacenter IP by accident. A rule can opt out with <code>-fallback-direct</code>.</p></li>
+            <li data-reveal="rise"><h3>One-time join codes</h3><p>A join code works once and expires. domicile generates every secret itself and stores only hashes. <code>domicile remove</code> disconnects a device within a second.</p></li>
+            <li data-reveal="rise"><h3>Read-only tools for agents</h3><p>The MCP server can check, verify and report. Only you can add rules.</p></li>
+            <li data-reveal="rise"><h3>No TLS interception</h3><p>domicile sees the hostnames you connect to, never the page content.</p></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="fit section" id="fit" aria-labelledby="fit-h">
+        <div class="wrap">
+          <h2 id="fit-h" data-reveal="blur">Is it for you?</h2>
+          <div class="fit-grid" data-reveal-stagger>
+            <div class="fit-col fit-yes" data-reveal="dock">
+              <h3>A good fit when</h3>
+              <ul>
+                <li>Your agent uses your own accounts: reading pages, logging in, scheduled checks.</li>
+                <li>The volume is low and one stable IP is enough.</li>
+                <li>You already have a device on a residential connection that stays on. A personal home IP is often cleaner than a shared proxy pool.</li>
+              </ul>
+            </div>
+            <div class="fit-col fit-no" data-reveal="dock">
+              <h3>Use a paid proxy instead when</h3>
+              <ul>
+                <li>You need rotating IPs or high volume. domicile will not add rotation or pooling.</li>
+                <li>You need IPs in countries where you have no device.</li>
+                <li>You have no residential connection to use.</li>
+              </ul>
+            </div>
+          </div>
+          <div class="limits" data-reveal="rise">
+            <div class="limits-head">
+              <h3>Limits worth knowing</h3>
+              <p class="small">Use your own connection for your own agents. domicile is not meant for large scale scraping, account creation or getting around a platform's rules.</p>
+            </div>
+            <ul>
+              <li>A residential IP fixes IP reputation only. Browser fingerprint, TLS fingerprint, behavior and account rate limits are separate problems.</li>
+              <li>Your home IP becomes associated with your agent's activity, and results depend on your ISP and your IP's history.</li>
+              <li>Hosted cloud browsers (Browserbase and similar) and Windows are not supported.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="final section band-teal" aria-labelledby="final-h">
+        <div class="wrap final-inner">
+          <h2 id="final-h" data-reveal="blur">Install it on your VPS and on one device at home</h2>
+          <div class="install-row" data-reveal="rise">
+            <Command lines={[install]} label="Install command" size="lg" />
+            <a class="link-gh" href={repo}><Icon name="github" />View on GitHub</a>
+          </div>
+          <p class="final-note" data-reveal="rise">Free, Apache-2.0. Prefer Go? <code>go install github.com/avinash-1707/domicile/cmd/domicile@latest</code></p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <svg class="footer-horizon" viewBox="0 0 1440 140" preserveAspectRatio="xMaxYMax slice" aria-hidden="true">
+        <g class="fh-stars">
+          <circle cx="96" cy="34" r="1" /><circle cx="212" cy="70" r="1.2" /><circle cx="348" cy="22" r="0.8" /><circle cx="470" cy="58" r="1" /><circle cx="604" cy="30" r="1.3" /><circle cx="742" cy="76" r="0.9" /><circle cx="866" cy="18" r="1" /><circle cx="988" cy="54" r="1.1" /><circle cx="1102" cy="28" r="0.8" /><circle cx="1390" cy="40" r="1" />
+        </g>
+        <path class="fh-hill" d="M0 112 C 180 96, 330 104, 520 108 S 860 92, 1040 106 S 1300 100, 1440 108" />
+        <path class="fh-ground" d="M0 120H1440" />
+        <path class="fh-tunnel" d="M0 130H1236V112" />
+        <g class="fh-tree"><path d="M1130 120v-10" /><ellipse cx="1130" cy="98" rx="7" ry="14" /></g>
+        <g class="fh-tree"><path d="M1352 120v-8" /><circle cx="1347" cy="104" r="7" /><circle cx="1357" cy="102" r="6" /></g>
+        <g class="fh-house">
+          <path d="M1180 120V82L1222 52L1264 82V120" />
+          <path d="M1172 86L1222 46L1272 86" />
+          <path d="M1194 72V58H1204V64" />
+          <rect class="fh-lamp" x="1230" y="90" width="18" height="16" />
+          <path d="M1239 90v16M1230 98h18" />
+          <rect class="fh-pi" x="1228" y="108" width="14" height="6" rx="1" />
+        </g>
+      </svg>
+      <div class="wrap footer-grid">
+        <div class="footer-sign">
+          <p class="footer-by">Built by Avinash</p>
+          <p class="footer-text">I build agent infrastructure and developer tools. Found a bug, or a site domicile did not help with? Open an issue or email me.</p>
+        </div>
+        <nav class="footer-links" aria-label="Project and contact links" data-indicator-group>
+          <span class="ind" aria-hidden="true"></span>
+          {footerLinks.map((l) => (
+            <div class="fl-row">
+              <a href={l.href} data-ind-item><Icon name={l.icon} /><span class="fl-label">{l.label}</span><span class="fl-detail">{l.detail}</span></a>
+              {l.icon === "mail" && (
+                <button type="button" class="copy copy-mini" data-copy="avinashnarwariya5@gmail.com" aria-label="Copy email address">
+                  <span class="copy-icons" aria-hidden="true"><Icon name="copy" class="i-copy" /><Icon name="check" class="i-done" /><Icon name="warning" class="i-fail" /></span>
+                  <span class="copy-label">Copy</span>
+                </button>
+              )}
+            </div>
+          ))}
+        </nav>
+      </div>
+      <div class="wrap footer-base">
+        <p>domicile is free and open source under Apache-2.0. Use your own connection for your own agents.</p>
+        <a href="#top">Back to top</a>
+      </div>
+    </footer>
+
+    <p class="sr-only" aria-live="polite" data-copy-status></p>
+    <script>
+      import "../scripts/page";
+    </script>
+  </body>
+</html>

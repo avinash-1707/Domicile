@@ -1,0 +1,8 @@
+The fonts in this folder are latin subsets of Newsreader, Archivo and Fragment Mono, as distributed by Google Fonts.
+Each is licensed under the SIL Open Font License, Version 1.1:
+https://openfontlicense.org/open-font-license-official-text/
+Copyright notices for each family are listed at https://fonts.google.com (see each family's "License" tab).
+
+newsreader-latin-var.woff2      Newsreader (variable: optical size, weight)
+archivo-latin-var.woff2         Archivo (variable: weight)
+fragment-mono-latin-400.woff2   Fragment Mono (regular)
