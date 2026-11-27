@@ -141,10 +141,10 @@ Most agent browser tools already accept a proxy. `domicile connect` writes the s
 |---|---|---|
 | Playwright MCP | `domicile connect playwright-mcp` | Writes a Playwright config with the proxy and prints the `claude mcp add` command; `-file .mcp.json` edits an MCP client file instead |
 | agent-browser | `domicile connect agent-browser` | Sets the proxy in `~/.agent-browser/config.json` |
-| curl, Python, Go, most CLIs | `domicile connect shell` | Prints `ALL_PROXY` / `HTTPS_PROXY` exports |
+| curl, Python, Go, most CLIs | `domicile connect shell` | Writes `ALL_PROXY` / `HTTPS_PROXY` / `NO_PROXY` exports, in both cases, to a private file you source |
 | Anything else | `domicile run -- <command>` | Runs the command with the proxy in its environment, including Node's built-in `fetch` (Node 22.21+ or 24+) |
 
-`domicile connect <tool> -undo` restores the tool's file byte for byte and revokes its credential.
+Running `connect` again reuses the tool's password, so other configs holding it keep working; add `-rotate` to issue a new one. `domicile connect <tool> -undo` restores the tool's file byte for byte, with its original permissions, and revokes its credential.
 
 ### MCP server
 
@@ -172,7 +172,7 @@ Rules live in `domicile.json` in the state directory. A running server picks up 
 
 ## Checking the exit
 
-Run `domicile verify` on the VPS while the server is running. For each exit it reports:
+Run `domicile verify` on the VPS while the server is running. It is a health check of each exit: it sends its requests straight through the exit, so it does not test your rules or your tools' proxy settings. For each exit it reports:
 
 - the public IP sites see, compared with the VPS's own IP
 - whether that IP's network is listed as residential, hosting or proxy (a best-effort hint from ip-api.com)
@@ -180,17 +180,47 @@ Run `domicile verify` on the VPS while the server is running. For each exit it r
 - the exit's timezone, so you can launch browsers with a matching one
 - how long the first request through the tunnel took
 
-It prints a table, or JSON with `-json`. `-exit <name>` checks one exit. It exits 0 when every check passes and 1 when one fails, so it works in scripts and health checks.
+It prints a table, or JSON with `-json`. `-exit <name>` checks one exit. It exits 0 when every check passes, 1 when one fails, and 5 when nothing failed but the IP or DNS comparison could not be measured (for example, a DNS probe timed out), so it works in scripts and health checks.
+
+To check a rule end to end, send a request through the proxy, for example `domicile run -- curl -sI https://reddit.com`, and look for `via=home` on that host's line in the server log.
 
 `domicile status` shows the connected exits, the server's addresses and fingerprint, and the active rules, also with `-json`.
 
 ## Security
 
-- The home agent refuses to connect to private, loopback, link-local and cloud-metadata addresses, so an agent on the VPS cannot reach your router or other devices on your LAN. The check runs on the resolved address, so DNS tricks do not get around it. It also covers the device's own networks (including IPv6 global addresses) and your public address, which on many connections is the router itself. `domicile agent -allow 192.168.1.50` opens a specific address if you want one reachable.
-- The proxy listens on loopback only and every client needs a credential. Each connected tool gets its own, so you can revoke one without touching the others.
+- The home agent refuses to connect to private, loopback, link-local and cloud-metadata addresses, so an agent on the VPS cannot reach your router or other devices on your LAN. The check runs on the resolved address, so DNS tricks do not get around it. It also covers the device's own networks (including IPv6 global addresses) and the public address the VPS sees, which on many connections is the router itself. `domicile agent -allow 192.168.1.50` opens a specific address if you want one reachable. This check is a backstop, not the boundary: see [Isolating the home device](#isolating-the-home-device).
+- The proxy listens on loopback only and every client needs a credential. Each connected tool gets its own, so you can revoke one without touching the others. `domicile server -proxy` can bind another address, but SOCKS5 and HTTP proxy passwords cross that connection unencrypted, so reach a remote proxy through SSH port forwarding or WireGuard instead. When the proxy is not on loopback, direct connections to the VPS's interface addresses and to private ranges are refused.
 - Join codes work once and expire. domicile generates every secret itself and stores only their hashes.
 - Agents get read-only tools. Only you can add rules.
 - `domicile remove <exit>` revokes a device, and the server disconnects it within a second.
+
+### Isolating the home device
+
+The agent only learns the one public address the VPS sees. If the tunnel runs over IPv6, it never sees your public IPv4, and some routers answer on that address from inside the LAN. Your ISP may also give the router IPv6 addresses outside the device's own subnet. Put the boundary in the network, covering both address families:
+
+- **Best:** run the exit on a guest Wi-Fi or VLAN that your router isolates from the rest of the LAN and from its own admin interface.
+- **Otherwise:** run `domicile agent` as a dedicated user and block that user's outbound traffic on the device. On Linux with nftables, for example:
+
+```sh
+sudo useradd --system domicile-exit
+sudo nft -f - <<'NFT'
+table inet domicile_exit {
+  chain out {
+    type filter hook output priority 0; policy accept;
+    meta skuid != "domicile-exit" accept
+    # DNS, if your resolver is the router; drop these lines if you use a public resolver.
+    ip daddr 192.168.1.1 udp dport 53 accept
+    ip daddr 192.168.1.1 tcp dport 53 accept
+    # Private ranges, CGNAT, link-local, and your router's public IPv4 (replace 203.0.113.7).
+    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 203.0.113.7 } reject
+    # ULA, link-local, and your ISP's delegated IPv6 prefix (replace 2001:db8:1234::/56).
+    ip6 daddr { fc00::/7, fe80::/10, 2001:db8:1234::/56 } reject
+  }
+}
+NFT
+```
+
+Allow the VPS address before the `reject` lines if it falls in one of those ranges. Test it by running `curl` as that user against your router's addresses before you rely on it. The rules above do not survive a reboot unless you add them to `/etc/nftables.conf`.
 
 ## Reference
 
@@ -205,7 +235,7 @@ It prints a table, or JSON with `-json`. `-exit <name>` checks one exit. It exit
 | `domicile rule add\|remove\|list` | VPS | Manage routing rules |
 | `domicile server` | VPS | Run the server and the local proxy |
 | `domicile status [-json]` | VPS | Show exits, connections and active rules |
-| `domicile verify [-exit name] [-json]` | VPS | Check what sites see through each exit |
+| `domicile verify [-exit name] [-json]` | VPS | Health-check each exit: what sites see through it |
 | `domicile connect <tool> [-undo]` | VPS | Point a tool at the proxy |
 | `domicile run -- <command>` | VPS | Run a command with the proxy in its environment |
 | `domicile mcp` | VPS | Read-only MCP tools for agents, over stdio |
@@ -237,6 +267,7 @@ Everything lives in the state directory, `~/.local/state/domicile` by default (`
 | 2 | Bad command or flags |
 | 3 | `verify` could not run |
 | 4 | The agent's credential was revoked or its join code was already used |
+| 5 | `verify` was inconclusive: no check failed, but the IP or DNS comparison could not be measured |
 
 ## Building from source
 

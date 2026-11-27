@@ -7,11 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/avinash-1707/domicile/internal/state"
 )
 
 // OnExitDown says what a rule does when its exit is not connected.
@@ -55,14 +58,27 @@ func Load(path string) (Config, error) {
 
 // Parse decodes and validates a rules file's bytes; name is used in errors.
 // Callers that also hash the file parse the same bytes they hashed.
+//
+// The live reload keeps the last good rules on any error, so anything short
+// of an explicit rules array is an error: null, {} or {"rules": null} from
+// a botched save must not clear routing. Clearing is {"rules": []}.
 func Parse(data []byte, name string) (Config, error) {
-	var c Config
+	var raw struct {
+		Rules *[]Rule `json:"rules"`
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	// A typo in a field name must not silently drop a rule's intent.
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&c); err != nil {
+	if err := dec.Decode(&raw); err != nil {
 		return Config{}, fmt.Errorf("parse %s: %w", name, err)
 	}
+	if _, err := dec.Token(); err != io.EOF {
+		return Config{}, fmt.Errorf("parse %s: unexpected content after the rules object", name)
+	}
+	if raw.Rules == nil {
+		return Config{}, fmt.Errorf(`%s: missing "rules" array (write {"rules": []} for no rules)`, name)
+	}
+	c := Config{Rules: *raw.Rules}
 	if err := c.normalize(); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", name, err)
 	}
@@ -78,6 +94,10 @@ func (c Config) Save(path string) error {
 	if err := c.normalize(); err != nil {
 		return err
 	}
+	if c.Rules == nil {
+		// Parse refuses "rules": null.
+		c.Rules = []Rule{}
+	}
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
@@ -87,27 +107,11 @@ func (c Config) Save(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".rules-*.json")
-	if err != nil {
-		return fmt.Errorf("save rules: %w", err)
-	}
-	defer os.Remove(tmp.Name()) // no-op after a successful rename
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return fmt.Errorf("save rules: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("save rules: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("save rules: %w", err)
-	}
 	// The file holds no secrets and is meant to be committed.
-	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+	if err := state.WriteFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("save rules: %w", err)
 	}
-	return os.Rename(tmp.Name(), path)
+	return nil
 }
 
 // normalize validates every rule and canonicalises its fields in place.

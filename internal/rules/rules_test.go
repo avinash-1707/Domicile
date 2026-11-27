@@ -167,3 +167,15 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 		t.Fatalf("typo in a field name not reported: %v", err)
 	}
 }
+
+func TestParseRequiresRulesArray(t *testing.T) {
+	for _, in := range []string{`null`, `{}`, `{"rules":null}`, `{"rules":[]} {"rules":[{"match":"a.com","via":"home"}]}`, `{"rules":[]}x`} {
+		if _, err := Parse([]byte(in), "test"); err == nil {
+			t.Errorf("Parse(%s) accepted", in)
+		}
+	}
+	c, err := Parse([]byte("{\"rules\": []}\n"), "test")
+	if err != nil || c.Rules == nil || len(c.Rules) != 0 {
+		t.Fatalf(`Parse({"rules": []}) = %+v, %v; want empty rules`, c, err)
+	}
+}

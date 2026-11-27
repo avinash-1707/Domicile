@@ -88,8 +88,23 @@ func TestLiveRulesReload(t *testing.T) {
 		t.Fatalf("unknown exit not reported: %q", rerr)
 	}
 
+	// Edits that parse as "no rules" by accident keep the previous rules;
+	// only an explicit empty array clears them.
+	for _, bad := range []string{`null`, `{}`, `{"rules": null}`, `{"rules": []} trailing`} {
+		os.WriteFile(path, []byte(bad), 0o644)
+		lr.reload()
+		if got := pathFor(t, router, "www.reddit.com"); got != "home" {
+			t.Fatalf("%s changed routing to %q", bad, got)
+		}
+		if _, rerr := lr.snapshot(); rerr == "" {
+			t.Fatalf("%s not reported", bad)
+		}
+	}
+
 	// Clearing rules on purpose still works.
-	(rules.Config{}).Save(path)
+	if err := (rules.Config{}).Save(path); err != nil {
+		t.Fatal(err)
+	}
 	lr.reload()
 	if got := pathFor(t, router, "www.reddit.com"); got != route.Direct {
 		t.Fatalf("after clearing: path %q, want direct", got)
