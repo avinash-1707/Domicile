@@ -26,8 +26,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// toolRun is the proxy user `domicile run` uses. Its password is kept in a
-// file so concurrent runs share it instead of rotating each other out.
+// toolRun is the proxy user `domicile run` uses. Its password is kept in
+// run.secret so concurrent runs share it instead of rotating each other out.
 const toolRun = "run"
 
 // exitCode carries a child process's exit status out of main.
@@ -54,7 +54,7 @@ func runRun(ctx context.Context, args []string, out io.Writer) error {
 	if err := parseFlags(fs, args[:sep]); err != nil {
 		return err
 	}
-	password, err := runCredential(*stateDir)
+	password, _, err := toolCredential(*stateDir, toolRun, false)
 	if err != nil {
 		return err
 	}
@@ -96,11 +96,29 @@ func isTerminal(f *os.File) bool {
 	return err == nil
 }
 
+// proxyVars are the environment settings that point a client at domicile,
+// shared by `run` and `connect shell`. Both cases: curl, Go and Python read
+// the lowercase names first or only, so an old lowercase value left in place
+// would win over ours.
+func proxyVars(addr, user, password string) [][2]string {
+	all := proxyURL("socks5h", addr, user, password)
+	h := proxyURL("http", addr, user, password)
+	const noProxy = "localhost,127.0.0.1,::1"
+	return [][2]string{
+		{"ALL_PROXY", all}, {"all_proxy", all},
+		{"HTTPS_PROXY", h}, {"https_proxy", h},
+		{"HTTP_PROXY", h}, {"http_proxy", h},
+		{"NO_PROXY", noProxy}, {"no_proxy", noProxy},
+		{"NODE_USE_ENV_PROXY", "1"},
+	}
+}
+
 // proxyEnv replaces any proxy settings in env with domicile's.
 func proxyEnv(env []string, addr, password string) []string {
+	vars := proxyVars(addr, toolRun, password)
 	drop := map[string]bool{}
-	for _, k := range []string{"ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY"} {
-		drop[k], drop[strings.ToLower(k)] = true, true
+	for _, v := range vars {
+		drop[v[0]] = true
 	}
 	var out []string
 	for _, kv := range env {
@@ -108,48 +126,70 @@ func proxyEnv(env []string, addr, password string) []string {
 			out = append(out, kv)
 		}
 	}
-	h := proxyURL("http", addr, toolRun, password)
-	return append(out,
-		"ALL_PROXY="+proxyURL("socks5h", addr, toolRun, password),
-		"HTTPS_PROXY="+h, "HTTP_PROXY="+h, "https_proxy="+h, "http_proxy="+h,
-		"NO_PROXY=localhost,127.0.0.1,::1",
-		"NODE_USE_ENV_PROXY=1",
-	)
+	for _, v := range vars {
+		out = append(out, v[0]+"="+v[1])
+	}
+	return out
 }
 
-// runCredential returns the run user's password, creating it on first use
-// or if the user was removed.
-func runCredential(stateDir string) (string, error) {
-	path := filepath.Join(stateDir, "run.secret")
+// toolCredential returns tool's proxy password, kept in <tool>.secret. It
+// reuses the stored one while the server still accepts it, so reconnecting
+// or running again does not lock out configs and shells already holding it.
+// rotate, or a missing or revoked user, issues a new one; restore then puts
+// the previous user and file back, for a caller whose config write failed.
+func toolCredential(stateDir, tool string, rotate bool) (password string, restore func() error, err error) {
+	path := filepath.Join(stateDir, tool+".secret")
 	// Two runs started together must not each create a credential and lock
 	// the other out.
 	unlock, err := state.LockFile(path+".lock", 5*time.Second)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer unlock()
 	st, err := state.Load(statePath(stateDir))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	if data, err := os.ReadFile(path); err == nil {
-		pw := strings.TrimSpace(string(data))
-		if u, ok := st.Users[toolRun]; ok && secret.MatchesDigest(pw, u.PasswordSHA256) {
-			return pw, nil
+	prevUser, hadUser := st.Users[tool]
+	prevFile, fileErr := os.ReadFile(path)
+	if fileErr == nil && !rotate {
+		pw := strings.TrimSpace(string(prevFile))
+		if hadUser && secret.MatchesDigest(pw, prevUser.PasswordSHA256) {
+			return pw, func() error { return nil }, nil
 		}
 	}
 	pw, err := state.NewSecret()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if err := state.WriteFileAtomic(path, []byte(pw+"\n"), 0o600); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	err = state.Update(statePath(stateDir), func(st *state.State) error {
-		st.Users[toolRun] = state.User{PasswordSHA256: secret.Digest(pw), Created: time.Now().UTC()}
+		st.Users[tool] = state.User{PasswordSHA256: secret.Digest(pw), Created: time.Now().UTC()}
 		return nil
 	})
-	return pw, err
+	if err != nil {
+		return "", nil, err
+	}
+	restore = func() error {
+		err := state.Update(statePath(stateDir), func(st *state.State) error {
+			if hadUser {
+				st.Users[tool] = prevUser
+			} else {
+				delete(st.Users, tool)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		if fileErr != nil {
+			return os.Remove(path)
+		}
+		return state.WriteFileAtomic(path, prevFile, 0o600)
+	}
+	return pw, restore, nil
 }
 
 // runMCP serves the read-only agent tools over stdio, backed by the running
