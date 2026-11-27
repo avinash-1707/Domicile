@@ -13,6 +13,7 @@ import (
 
 	"github.com/avinash-1707/domicile/internal/certs"
 	"github.com/avinash-1707/domicile/internal/tunnel"
+	"github.com/avinash-1707/domicile/internal/tunnel/quictun"
 )
 
 type options struct {
@@ -35,11 +36,17 @@ type result struct {
 // bulkSize asks the responder to send until the stream is torn down.
 const bulkSize = 1 << 62
 
-// run connects one server/exit pair over t and measures, in order, stream
+// quicConfig is the tuning under test.
+var quicConfig = quictun.Config{
+	MaxStreamReceiveWindow:     6 << 20,
+	MaxConnectionReceiveWindow: 15 << 20,
+}
+
+// run connects one server/exit pair over QUIC and measures, in order, stream
 // open latency, page-style loads and bulk throughput. Bulk runs last because
 // it leaves a stalled stream behind.
-func run(ctx context.Context, t transport, opts options) (result, error) {
-	l, server, exit, err := connect(ctx, t)
+func run(ctx context.Context, opts options) (result, error) {
+	l, server, exit, err := connect(ctx)
 	if err != nil {
 		return result{}, err
 	}
@@ -85,7 +92,7 @@ func run(ctx context.Context, t transport, opts options) (result, error) {
 
 // connect returns the listener too: closing it ends the sessions, so it must
 // stay open until they are done.
-func connect(ctx context.Context, t transport) (l tunnel.Listener, server, exit tunnel.Session, err error) {
+func connect(ctx context.Context) (l tunnel.Listener, server, exit tunnel.Session, err error) {
 	cert, err := certs.SelfSigned("domicile")
 	if err != nil {
 		return nil, nil, nil, err
@@ -94,7 +101,7 @@ func connect(ctx context.Context, t transport) (l tunnel.Listener, server, exit 
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	l, err = t.listen("127.0.0.1:0", certs.ServerConfig(cert, tunnel.ALPN))
+	l, err = quictun.Listen("127.0.0.1:0", certs.ServerConfig(cert, tunnel.ALPN), quicConfig)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -112,7 +119,7 @@ func connect(ctx context.Context, t transport) (l tunnel.Listener, server, exit 
 		ch <- accepted{s: s, err: err}
 	}()
 
-	exit, err = t.dial(ctx, l.Addr().String(), certs.PinnedClientConfig(pin, tunnel.ALPN))
+	exit, err = quictun.Dial(ctx, l.Addr().String(), certs.PinnedClientConfig(pin, tunnel.ALPN), quicConfig)
 	if err != nil {
 		l.Close()
 		return nil, nil, nil, err
