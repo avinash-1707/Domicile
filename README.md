@@ -1,4 +1,8 @@
 <p align="center">
+  <img src=".github/assets/logo.svg" alt="domicile logo" width="72">
+</p>
+
+<p align="center">
   <img src=".github/assets/banner.webp" alt="A server in a datacenter sends most traffic straight to websites, while one route runs through a tunnel to a small device in a house and reaches its website from there." width="100%">
 </p>
 
