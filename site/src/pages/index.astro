@@ -268,6 +268,37 @@ const footerColumns = [
         </div>
       </section>
 
+      <section class="film section band-teal" id="film" aria-labelledby="film-h">
+        <div class="wrap film-layout">
+          <h2 id="film-h" data-reveal="blur">See why your agent gets blocked.</h2>
+          <div class="film-frame" data-film data-reveal="scale">
+            <div class="film-screen">
+              <!-- page.ts plays this loop while it is on screen; click pauses it. Without the script it stays a poster. -->
+              <video
+                muted
+                loop
+                playsinline
+                preload="none"
+                poster="/media/domicile-poster.webp"
+                width="1920"
+                height="1080"
+                aria-label="domicile launch film"
+                aria-describedby="film-desc"
+              >
+                <source src="/media/domicile-launch.mp4" type="video/mp4" />
+                <a href="/media/domicile-launch.mp4">Download the film (MP4)</a>
+              </video>
+              <span class="film-paused" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M5 3.2v9.6a.6.6 0 0 0 .9.5l7.6-4.8a.6.6 0 0 0 0-1L5.9 2.7a.6.6 0 0 0-.9.5Z" /></svg></span>
+              <button type="button" class="film-sound" data-film-sound aria-label="Unmute" aria-pressed="false" hidden>
+                <svg class="off" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z" /><path d="m17 9 5 6M22 9l-5 6" /></svg>
+                <svg class="on" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z" /><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12" /></svg>
+              </button>
+            </div>
+          </div>
+          <p class="sr-only" id="film-desc">A laptop's request to a website passes a gate that reads its home network and opens. The same request from a VPS is read as a datacenter network and refused, even with a patched browser. Sent out through a home connection, the request gets through.</p>
+        </div>
+      </section>
+
       <section class="tagline section" aria-label="What changes">
         <p class="wrap tagline-text" data-tagline>
           Your agent stays on the VPS. Only the sites you name see your home connection.

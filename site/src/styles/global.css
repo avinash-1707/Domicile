@@ -384,6 +384,28 @@ p code, li code, dd code { background: rgb(12 66 67 / 0.08); padding: 1px var(--
 @media (max-width: 559px) { .cmp th, .cmp td { padding: var(--sp-2) var(--sp-3); } .cmp { font-size: 13px; } }
 .compare figcaption { font-size: 14px; line-height: 20px; color: var(--muted); }
 
+/* film: the launch film alone in a night frame, capped at 896px (Tailwind 4xl), the heading beside it once there is room for both */
+.film-layout { display: grid; gap: var(--sp-6); align-items: center; }
+@media (min-width: 1320px) { .film-layout { grid-template-columns: minmax(0, 1fr) minmax(0, 896px); gap: var(--sp-8); } }
+.film-layout > * { min-width: 0; }
+.film-frame { max-width: 896px; border-radius: 16px; overflow: hidden; background: var(--teal-deep); border: 1px solid rgb(159 192 187 / 0.22); box-shadow: 0 32px 64px -32px rgb(0 0 0 / 0.5); }
+/* the box is the film's own ratio, so the poster and every frame fill it without cropping or shifting */
+.film-screen { position: relative; aspect-ratio: 16 / 9; background: var(--teal-deep); }
+.film-screen video { display: block; width: 100%; height: 100%; object-fit: contain; cursor: pointer; }
+.film-screen video:focus-visible { outline-offset: -3px; }
+/* shown only while the visitor has paused it, so a stopped loop never looks frozen */
+.film-paused { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 0; transition: opacity 150ms ease; }
+.film-paused svg { box-sizing: content-box; width: 22px; height: 22px; padding: 21px 21px 21px 23px; border-radius: 50%; background: rgb(8 48 47 / 0.72); border: 1px solid rgb(159 192 187 / 0.3); fill: var(--amber); }
+[data-film].is-paused .film-paused { opacity: 1; }
+.film-sound { position: absolute; top: var(--sp-3); right: var(--sp-3); display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border-radius: 50%; border: 1px solid rgb(159 192 187 / 0.3); background: rgb(8 48 47 / 0.7); color: var(--cream); cursor: pointer; transition: background-color 150ms ease, scale 150ms var(--ease-out); }
+.film-sound[hidden] { display: none; }
+.film-sound svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.film-sound .on, .film-sound[aria-pressed="true"] .off { display: none; }
+.film-sound[aria-pressed="true"] .on { display: block; }
+.film-sound:active { scale: 0.96; }
+@media (hover: hover) { .film-sound:hover { background: var(--teal-deep); } }
+@media (prefers-reduced-motion: reduce) { .film-sound:active { scale: 1; } }
+
 /* tagline */
 .tagline { background: linear-gradient(180deg, var(--surface-2), #e3ded3); padding-block: var(--sp-9); }
 @media (min-width: 900px) { .tagline { padding-block: 120px; } }

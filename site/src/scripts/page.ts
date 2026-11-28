@@ -314,6 +314,59 @@ function initTabs(): void {
   });
 }
 
+/* ---------- launch film: a silent loop that runs while it is on screen; click pauses, one button unmutes ---------- */
+function initFilm(): void {
+  const root = document.querySelector<HTMLElement>("[data-film]");
+  const video = root?.querySelector("video");
+  const sound = root?.querySelector<HTMLButtonElement>("[data-film-sound]");
+  if (!root || !video || !sound) return;
+
+  // reduced motion: nothing moves until the visitor clicks
+  let userPaused = reduced();
+  const setUserPaused = (on: boolean): void => {
+    userPaused = on;
+    root.classList.toggle("is-paused", on);
+  };
+  const play = (): void => {
+    // preload="none": no video bytes are fetched until the first play
+    video.play().catch(() => setUserPaused(true));
+  };
+  const name = (): void => video.setAttribute("aria-label", video.paused ? "Play the film" : "Pause the film");
+
+  setUserPaused(userPaused);
+  video.tabIndex = 0;
+  video.setAttribute("role", "button");
+  name();
+  video.addEventListener("play", name);
+  video.addEventListener("pause", name);
+  video.addEventListener("click", () => {
+    if (video.paused) {
+      setUserPaused(false);
+      play();
+    } else {
+      setUserPaused(true);
+      video.pause();
+    }
+  });
+  video.addEventListener("keydown", (e) => {
+    if (e.key !== " " && e.key !== "Enter") return;
+    e.preventDefault();
+    video.click();
+  });
+
+  sound.hidden = false;
+  sound.addEventListener("click", () => {
+    video.muted = !video.muted;
+    sound.setAttribute("aria-pressed", String(!video.muted));
+    sound.setAttribute("aria-label", video.muted ? "Unmute" : "Mute");
+  });
+
+  new IntersectionObserver(([entry]) => {
+    if (!entry.isIntersecting) video.pause();
+    else if (!userPaused) play();
+  }, { threshold: 0.35 }).observe(video);
+}
+
 /* ---------- the hero cross-section: packets follow the real routing rules ---------- */
 type Route = "direct" | "home" | "refused";
 interface Packet {
@@ -652,5 +705,6 @@ initTagline();
 initIndicators();
 initCopy();
 initTabs();
+initFilm();
 initScene();
 initFields(reduceMotion);
